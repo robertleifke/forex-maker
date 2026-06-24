@@ -100,20 +100,24 @@ All other tunable parameters (arbitrage thresholds, scheduler intervals, fee est
    ```
    The script will prompt you for:
    - **GitHub Actions runner token** — from **Settings → Actions → Runners → New self-hosted runner**
-   - **Dashboard hostname** — e.g. `engine.yourdomain.com`
-   - **Cloudflare login** — a URL will appear; open it in your browser to authenticate
 
-3. Copy your `.env` to the server:
+   It installs [Caddy](https://caddyserver.com), opens ports 80/443, and serves the
+   dashboard from `deploy/Caddyfile` (hostname `cngn.lavavc.io`) with automatic
+   Let's Encrypt TLS. The engine itself stays bound to `127.0.0.1:8000`; Caddy is the
+   only public ingress.
+
+3. At your DNS provider, create an **A record** for `cngn.lavavc.io` pointing to the
+   server's public IP.
+
+4. Copy your `.env` to the server:
    ```bash
    cat .env | ssh root@<server-ip> "cat > /opt/repo/.env"
    ```
 
-4. In the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com), create an **Access application**:
-   - Application type: Self-hosted
-   - Application domain: your hostname
-   - Policy: Allow → Emails → add your email address
-
-The dashboard is then accessible only after Cloudflare identity verification. The port `8000` is bound to `127.0.0.1` — not reachable from the public internet directly.
+The dashboard is **public and read-only** — anyone can view it, no login. Mutating
+API endpoints require `ENGINE_API_TOKEN`. The one unauthenticated state-mutating
+endpoint, `POST /api/webhooks/quidax`, is locked to the server's own public IP by a
+`remote_ip` rule in `deploy/Caddyfile`; change that IP there if the server moves.
 
 ## CI/CD pipeline
 

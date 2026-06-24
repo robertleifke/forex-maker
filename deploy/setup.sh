@@ -66,70 +66,45 @@ else
 fi
 
 echo ""
-echo "=== Installing cloudflared ==="
-if ! command -v cloudflared &>/dev/null; then
-  curl -fsSL -o /tmp/cloudflared.deb \
-    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb"
-  dpkg -i /tmp/cloudflared.deb
-  rm /tmp/cloudflared.deb
+echo "=== Installing Caddy ==="
+if ! command -v caddy &>/dev/null; then
+  apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+    > /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update
+  apt-get install -y caddy
 else
-  echo "cloudflared already installed, skipping."
+  echo "Caddy already installed, skipping."
 fi
 
 echo ""
-echo "=== Cloudflare Tunnel setup ==="
-echo ""
-read -rp "Enter the dashboard hostname (e.g. engine.yourdomain.com): " CF_HOSTNAME
-
-echo ""
-echo "--- Step 1: Authenticate with Cloudflare ---"
-echo "A URL will appear below. Open it in your browser and log in."
-cloudflared tunnel login
-
-echo ""
-echo "--- Step 2: Creating tunnel 'cngn' ---"
-if cloudflared tunnel list 2>/dev/null | grep -q "cngn"; then
-  echo "Tunnel 'cngn' already exists, skipping creation."
+echo "=== Opening firewall for HTTP/HTTPS ==="
+if command -v ufw &>/dev/null; then
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+  echo "Allowed 80/tcp and 443/tcp (enable ufw separately if it is not already active)."
 else
-  cloudflared tunnel create cngn
+  echo "ufw not installed; ensure ports 80 and 443 are open at your provider firewall."
 fi
 
-TUNNEL_ID=$(cloudflared tunnel list --output json 2>/dev/null \
-  | python3 -c "import json,sys; t=json.load(sys.stdin); print(next(x['id'] for x in t if x['name']=='cngn'))")
-CREDS_FILE="/root/.cloudflared/${TUNNEL_ID}.json"
-
-mkdir -p /etc/cloudflared
-cat > /etc/cloudflared/config.yml <<EOF
-tunnel: ${TUNNEL_ID}
-credentials-file: ${CREDS_FILE}
-
-ingress:
-  - hostname: ${CF_HOSTNAME}
-    service: http://localhost:8000
-  - service: http_status:404
-EOF
-
 echo ""
-echo "--- Step 3: Creating DNS record ---"
-cloudflared tunnel route dns cngn "${CF_HOSTNAME}"
-
-echo ""
-echo "--- Step 4: Installing and starting cloudflared service ---"
-if systemctl is-active --quiet cloudflared; then
-  systemctl restart cloudflared
-else
-  cloudflared service install
-  systemctl enable cloudflared
-  systemctl start cloudflared
-fi
-echo "Cloudflare tunnel running → https://${CF_HOSTNAME}"
+echo "=== Installing Caddyfile ==="
+# Hostname and the Quidax webhook source-IP allowlist live in deploy/Caddyfile.
+cp /opt/repo/deploy/Caddyfile /etc/caddy/Caddyfile
+systemctl reload caddy || systemctl restart caddy
+echo "Caddy serving the dashboard with automatic Let's Encrypt TLS."
 
 echo ""
 echo "=== Done ==="
 echo ""
 echo "Remaining steps:"
-echo "  1. Copy your .env to the server:"
+echo "  1. At your DNS provider, create an A record for the dashboard hostname"
+echo "     (cngn.lavavc.io) pointing to this server's public IP."
+echo "  2. Copy your .env to the server:"
 echo "       cat .env | ssh root@<server-ip> \"cat > /opt/repo/.env\""
-echo "  2. In the Cloudflare Zero Trust dashboard, create an Access application"
-echo "     for https://${CF_HOSTNAME} and set your allowed email policy."
 echo "  3. Push to main to trigger the first deployment."
+echo ""
+echo "The dashboard is public and read-only. Mutating endpoints require"
+echo "ENGINE_API_TOKEN; the Quidax webhook is locked by source IP in deploy/Caddyfile."

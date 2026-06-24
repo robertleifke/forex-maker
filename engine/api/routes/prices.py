@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,12 +10,18 @@ import structlog
 
 from engine.api.deps import get_repository, require_blended_calculator, require_normalizer, require_price_aggregator
 from engine.api.schemas import BlendedPriceResponse, NormalizedPriceResponse, VenuePriceResponse
+from engine.config import settings
 from engine.db.repository import DatabaseRepository
 from engine.market.price_aggregation import BlendedPriceCalculator, PriceNormalizer
 from engine.market.venue_prices import VenuePriceAggregator
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+# Public, unauthenticated refresh triggers outbound venue fetches; throttle globally
+# so it cannot be used to hammer venue APIs. Monotonic clock, set before the fetch
+# so concurrent bursts cannot slip past the gate.
+_last_refresh_monotonic: float = 0.0
 
 
 @router.get("/prices", response_model=list[VenuePriceResponse])
@@ -88,6 +95,17 @@ async def get_normalized_prices(
 async def refresh_prices(
     price_aggregator: VenuePriceAggregator = Depends(require_price_aggregator),
 ) -> list[VenuePriceResponse]:
+    global _last_refresh_monotonic
+    now = time.monotonic()
+    elapsed = now - _last_refresh_monotonic
+    if elapsed < settings.price_refresh_min_interval_seconds:
+        retry_after = int(settings.price_refresh_min_interval_seconds - elapsed) + 1
+        raise HTTPException(
+            status_code=429,
+            detail="Price refresh rate-limited",
+            headers={"Retry-After": str(retry_after)},
+        )
+    _last_refresh_monotonic = now
     try:
         venue_prices = await price_aggregator.fetch_all()
         return [

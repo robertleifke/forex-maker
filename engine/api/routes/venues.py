@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, field_validator
 from web3 import Web3
 
@@ -301,7 +301,20 @@ async def get_quidax_lp_address() -> dict[str, Any]:
     return {"status": "success", "data": {"address": settings.quidax_lp_address}}
 
 
-@router.post("/webhooks/quidax")
+def verify_webhook_source(request: Request) -> None:
+    """Restrict the unauthenticated Quidax webhook to configured source IPs.
+
+    nginx-proxy sets X-Real-IP to the real client address (overwriting any client
+    value), so it is authoritative on the public path. Missing or unlisted IP fails closed.
+    """
+    allowed = {ip.strip() for ip in settings.quidax_webhook_allowed_ips.split(",") if ip.strip()}
+    client_ip = request.headers.get("x-real-ip")
+    if client_ip not in allowed:
+        logger.warning("quidax_webhook_rejected", client_ip=client_ip)
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@router.post("/webhooks/quidax", dependencies=[Depends(verify_webhook_source)])
 async def quidax_webhook(
     event: dict[str, Any],
     runtime: EngineRuntime = Depends(get_runtime),

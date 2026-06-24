@@ -66,45 +66,23 @@ else
 fi
 
 echo ""
-echo "=== Installing Caddy ==="
-if ! command -v caddy &>/dev/null; then
-  apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update
-  apt-get install -y caddy
-else
-  echo "Caddy already installed, skipping."
-fi
-
-echo ""
-echo "=== Opening firewall for HTTP/HTTPS ==="
-if command -v ufw &>/dev/null; then
-  ufw allow 80/tcp
-  ufw allow 443/tcp
-  echo "Allowed 80/tcp and 443/tcp (enable ufw separately if it is not already active)."
-else
-  echo "ufw not installed; ensure ports 80 and 443 are open at your provider firewall."
-fi
-
-echo ""
-echo "=== Installing Caddyfile ==="
-# Hostname and the Quidax webhook source-IP allowlist live in deploy/Caddyfile.
-cp /opt/repo/deploy/Caddyfile /etc/caddy/Caddyfile
-systemctl reload caddy || systemctl restart caddy
-echo "Caddy serving the dashboard with automatic Let's Encrypt TLS."
+echo "=== Public ingress ==="
+echo "TLS and the public vhost are served by the existing nginx-proxy + acme-companion"
+echo "stack on this host. The engine container self-registers via VIRTUAL_HOST /"
+echo "LETSENCRYPT_HOST env vars in docker-compose.yml; no extra ingress software is needed."
+echo "Ensure the engine service is attached to the nginx-proxy Docker network (see"
+echo "docker-compose.yml) so nginx-proxy can reach it."
 
 echo ""
 echo "=== Done ==="
 echo ""
 echo "Remaining steps:"
-echo "  1. At your DNS provider, create an A record for the dashboard hostname"
-echo "     (cngn.lavavc.io) pointing to this server's public IP."
+echo "  1. At your DNS provider, create an A record for cngn.lavavc.io pointing to"
+echo "     this server's public IP."
 echo "  2. Copy your .env to the server:"
 echo "       cat .env | ssh root@<server-ip> \"cat > /opt/repo/.env\""
 echo "  3. Push to main to trigger the first deployment."
 echo ""
-echo "The dashboard is public and read-only. Mutating endpoints require"
-echo "ENGINE_API_TOKEN; the Quidax webhook is locked by source IP in deploy/Caddyfile."
+echo "The dashboard is public and read-only. Mutating endpoints require ENGINE_API_TOKEN;"
+echo "the Quidax webhook is locked to QUIDAX_WEBHOOK_ALLOWED_IPS via the X-Real-IP header"
+echo "set by nginx-proxy."

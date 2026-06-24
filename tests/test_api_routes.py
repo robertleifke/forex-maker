@@ -653,3 +653,42 @@ async def test_restore_venue_params_rehydrates_lp_and_cex_configs():
     assert quidax.params.ladder_enabled is True
     assert quidax.params.anchor_source == "dex_vwap"
     assert quidax.params.order_size_usdt == Decimal("10")
+
+
+def test_quidax_webhook_rejects_missing_or_unlisted_source_ip():
+    runtime = _make_runtime()
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        with patch.object(venue_routes.settings, "quidax_webhook_allowed_ips", "77.42.32.180"):
+            # No X-Real-IP header from the edge -> fail closed.
+            no_header = client.post(
+                "/api/webhooks/quidax", json={"event": "order.filled", "data": {"id": "1"}}
+            )
+            # Spoofed/other source -> rejected.
+            wrong_ip = client.post(
+                "/api/webhooks/quidax",
+                json={"event": "order.filled", "data": {"id": "1"}},
+                headers={"X-Real-IP": "1.2.3.4"},
+            )
+
+    assert no_header.status_code == 403
+    assert wrong_ip.status_code == 403
+
+
+def test_quidax_webhook_accepts_allowed_source_ip():
+    runtime = _make_runtime()
+    venue = SimpleNamespace(handle_webhook=AsyncMock())
+    runtime.venues = {"quidax": venue}
+    app = _make_app(runtime)
+
+    with TestClient(app) as client:
+        with patch.object(venue_routes.settings, "quidax_webhook_allowed_ips", "77.42.32.180"):
+            response = client.post(
+                "/api/webhooks/quidax",
+                json={"event": "order.filled", "data": {"id": "1"}},
+                headers={"X-Real-IP": "77.42.32.180"},
+            )
+
+    assert response.status_code == 200
+    venue.handle_webhook.assert_awaited_once()

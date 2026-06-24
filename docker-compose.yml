@@ -2,10 +2,25 @@ services:
   engine:
     image: ghcr.io/lavavc/automated-infra:latest
     restart: always
+    # Published on loopback for local debugging only. Public traffic reaches the
+    # container over the nginx-proxy network below, not via this host port.
     ports:
       - "127.0.0.1:8000:8000"
     env_file: .env
     environment:
       HOST: "0.0.0.0"
+      # Consumed by the existing nginx-proxy + acme-companion stack to generate the
+      # public vhost and Let's Encrypt certificate.
+      VIRTUAL_HOST: "cngn.lavavc.io"
+      VIRTUAL_PORT: "8000"
+      LETSENCRYPT_HOST: "cngn.lavavc.io"
+      LETSENCRYPT_EMAIL: "andy@lavavc.io"
     volumes:
       - ./data:/app/data
+    networks:
+      - nginx-proxy
+
+networks:
+  nginx-proxy:
+    external: true
+    name: serve

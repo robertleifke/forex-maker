@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # rate-limited to at most one refresh per this interval (seconds) across all callers.
     price_refresh_min_interval_seconds: float = 1.0
 
+    # The Quidax webhook is unauthenticated and mutates in-memory order state, so it is
+    # restricted to known source IPs (comma-separated). The public edge (nginx-proxy)
+    # overwrites X-Real-IP with the real client address, so the value cannot be spoofed
+    # through the public path; see engine/api/routes/venues.py.
+    quidax_webhook_allowed_ips: str = "77.42.32.180"
+
     # RPC endpoints — set ALCHEMY_KEY to use Alchemy for all chains,
     # or override individual URLs directly.
     alchemy_key: str = Field(default="", description="Alchemy API key (used for all chain RPCs)")

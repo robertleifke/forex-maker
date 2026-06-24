@@ -101,10 +101,16 @@ All other tunable parameters (arbitrage thresholds, scheduler intervals, fee est
    The script will prompt you for:
    - **GitHub Actions runner token** — from **Settings → Actions → Runners → New self-hosted runner**
 
-   It installs [Caddy](https://caddyserver.com), opens ports 80/443, and serves the
-   dashboard from `deploy/Caddyfile` (hostname `cngn.lavavc.io`) with automatic
-   Let's Encrypt TLS. The engine itself stays bound to `127.0.0.1:8000`; Caddy is the
-   only public ingress.
+   Public ingress (TLS + vhost) is handled by the host's existing **nginx-proxy +
+   acme-companion** stack. The engine container self-registers via the
+   `VIRTUAL_HOST` / `VIRTUAL_PORT` / `LETSENCRYPT_HOST` / `LETSENCRYPT_EMAIL` env vars
+   in `docker-compose.yml`, and must be attached to nginx-proxy's Docker network (the
+   `networks:` block in `docker-compose.yml`). Confirm the network name with:
+   ```bash
+   docker inspect nginx-proxy --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+   ```
+   The engine itself stays bound to `127.0.0.1:8000`; nginx-proxy reaches it over the
+   shared Docker network.
 
 3. At your DNS provider, create an **A record** for `cngn.lavavc.io` pointing to the
    server's public IP.
@@ -116,8 +122,9 @@ All other tunable parameters (arbitrage thresholds, scheduler intervals, fee est
 
 The dashboard is **public and read-only** — anyone can view it, no login. Mutating
 API endpoints require `ENGINE_API_TOKEN`. The one unauthenticated state-mutating
-endpoint, `POST /api/webhooks/quidax`, is locked to the server's own public IP by a
-`remote_ip` rule in `deploy/Caddyfile`; change that IP there if the server moves.
+endpoint, `POST /api/webhooks/quidax`, is locked to `QUIDAX_WEBHOOK_ALLOWED_IPS`
+(default the server's own IP), enforced against the `X-Real-IP` header that
+nginx-proxy sets to the real client address; update that setting if the source moves.
 
 ## CI/CD pipeline
 

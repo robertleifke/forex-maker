@@ -6,7 +6,7 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.types import LPPosition, Position, TxResult
+from engine.types import LPPosition, OrderBookDepth, OrderBookLevel, Position, TxResult
 from tests.conftest_params import make_dex_params
 from engine.venues.dex.v4 import BaseV4DexAdapter
 from engine.venues.dex.shared import PositionState
@@ -159,32 +159,41 @@ class FakeDexAdapter:
 
 
 class FakeCexAdapter:
-    """In-process double for CEX venue. Configurable market order outcomes."""
+    """In-process double for the Quidax usdtcngn market (base USDT).
+
+    Mirrors the real ``place_market_order`` return shape: executed USDT (base)
+    and avg price in cNGN per USDT. The ``buy_success`` / ``sell_success`` flags
+    are expressed in terms of the *cNGN* arb intent — acquiring cNGN maps to a
+    Quidax ``sell`` of USDT, disposing of cNGN to a Quidax ``buy`` of USDT — so
+    the flag is selected by the Quidax side the executor actually submits.
+    """
 
     def __init__(
         self,
         buy_success: bool = True,
         sell_success: bool = True,
-        buy_cngn: Decimal = Decimal("1000"),
-        buy_price: Decimal = Decimal("0.000606"),
-        sell_cngn: Decimal = Decimal("1000"),
-        sell_price: Decimal = Decimal("0.000607"),
+        executed_usdt: Decimal = Decimal("500"),
+        avg_price_cngn_per_usdt: Decimal = Decimal("1639.34"),
     ):
         self._buy_success = buy_success
         self._sell_success = sell_success
-        self._buy_cngn = buy_cngn
-        self._buy_price = buy_price
-        self._sell_cngn = sell_cngn
-        self._sell_price = sell_price
+        self._executed_usdt = executed_usdt
+        self._avg_price = avg_price_cngn_per_usdt
+        self.market_order_calls: list[tuple[str, Decimal]] = []
 
-    async def place_market_order(self, side: str, amount: Decimal):
-        if side == "buy":
-            if self._buy_success:
-                return True, self._buy_cngn, self._buy_price, None
-            return False, Decimal("0"), self._buy_price, "simulated buy failure"
-        if self._sell_success:
-            return True, self._sell_cngn, self._sell_price, None
-        return False, Decimal("0"), self._sell_price, "simulated sell failure"
+    async def get_order_book_depth(self, limit: int = 50):
+        level = OrderBookLevel(price=self._avg_price, amount=Decimal("1000000"))
+        return OrderBookDepth(
+            venue="quidax", pair="cNGN/USDT", timestamp=0, bids=[level], asks=[level],
+        )
+
+    async def place_market_order(self, side: str, volume_usdt: Decimal):
+        self.market_order_calls.append((side, volume_usdt))
+        # cNGN-buy intent submits a USDT "sell"; cNGN-sell intent a USDT "buy".
+        intent_ok = self._buy_success if side == "sell" else self._sell_success
+        if intent_ok:
+            return True, self._executed_usdt, self._avg_price, None
+        return False, Decimal("0"), self._avg_price, f"simulated {side} failure"
 
 
 # Register FakeDexAdapter as a virtual subclass of BaseV4DexAdapter so that

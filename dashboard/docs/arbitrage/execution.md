@@ -20,6 +20,17 @@ The actual execution steps:
 
 **DEX→CEX directions:** When the buy is on a DEX and the sell is on Quidax (UNI_BSC_TO_QUIDAX / UNI_BASE_TO_QUIDAX), the sell leg is a REST API call and cannot be simulated. If the Quidax sell fails after a successful on-chain buy, the trade becomes half-open and must be recovered via the normal recovery flow — see Half-open trades below.
 
+### Quidax market-order mapping (cNGN intent → usdtcngn order)
+
+The Quidax market is `usdtcngn`, so **USDT is the base asset and cNGN is the quote**, and Quidax denominates a market order's `volume` in the base asset (USDT). The arb reasons in cNGN, so `ArbitrageExecutor` translates intent → order at the venue boundary; `place_market_order` is a thin transport that submits exactly the side and USDT volume it is given.
+
+| cNGN intent | Quidax side | `volume` | How sized |
+| --- | --- | --- | --- |
+| Acquire cNGN (`execute_cex_buy`, QUIDAX→DEX buy leg) | `sell` USDT (hits bids) | USDT spent | the adjusted trade size in USDT |
+| Dispose of cNGN (`execute_cex_sell`, DEX→CEX sell leg) | `buy` USDT (hits asks) | USDT to buy | walk the live ask book for `amount_cngn` — the most USDT those cNGN can buy, so cNGN spent never exceeds the buy-leg holdings |
+
+Both methods return an `ArbitrageTrade` in the units the rest of the arb expects: `amount` in cNGN (`executed_usdt × avg_price`) and `price` in USD per cNGN (`1 / avg_price`), where `avg_price` is Quidax's fill price in cNGN per USDT. A cNGN quantity must never be passed straight through as `volume`: Quidax would read it as ~1600× the intended USDT and reject with *"Not enough liquidity to place market order."* The side/volume mapping is pinned in `tests/test_executor.py`.
+
 ## DEX-DEX execution
 
 Before executing either leg, both are simulated via `eth_call`. The sell-side simulation uses the cNGN amount from the detection signal (`cngn_transferred`). The buy-side simulation uses the USDC/USDT amount from the adjusted trade size. If either simulation fails, no on-chain transaction is sent, and the failure is classified (see Preflight error classification below).

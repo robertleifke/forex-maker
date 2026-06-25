@@ -71,11 +71,12 @@ class FakeCexVenue:
         self.buy_calls = []
         self._buy_ok = buy_ok
 
-    async def place_market_order(self, side, amount):
-        self.buy_calls.append((side, amount))
+    async def place_market_order(self, side, volume_usdt):
+        # Quidax usdtcngn market: volume is USDT (base); avg_price is cNGN per USDT.
+        self.buy_calls.append((side, volume_usdt))
         if self._buy_ok:
-            return True, amount, Decimal("0.00061"), None
-        return False, amount, Decimal("0"), "order rejected"
+            return True, volume_usdt, Decimal("1639.34"), None
+        return False, volume_usdt, Decimal("0"), "order rejected"
 
 
 def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):

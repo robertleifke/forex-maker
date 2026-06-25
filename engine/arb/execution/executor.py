@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 import structlog
 
+from engine.arb.detection.cex_dex import QUIDAX_FEE, walk_orderbook_asks
 from engine.types import ArbitrageTrade
 from engine.venues.base import VenueAdapter, is_dex_execution_venue
 from engine.venues.cex.quidax import QuidaxAdapter
@@ -197,21 +198,34 @@ class ArbitrageExecutor:
         self,
         venue_name: str,
         amount_usd: Decimal,
-        limit_price: Decimal,
+        price_usd_per_cngn: Decimal,
         opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """Place a market buy order on a CEX."""
+        """Acquire cNGN on a CEX by spending `amount_usd` of USDT.
+
+        The Quidax market is ``usdtcngn`` (base USDT), so acquiring cNGN means
+        *selling* USDT into the bid side; the order ``volume`` is the USDT spent.
+        The returned trade is denominated as the wider arb expects: cNGN ``amount``
+        and a USD-per-cNGN ``price``.
+        """
         venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
 
-        amount_cngn = amount_usd / limit_price
-        success, executed_cngn, avg_price, error = await venue.place_market_order("buy", amount_cngn)
+        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.place_market_order(
+            "sell", amount_usd
+        )
+        if success and avg_price_cngn_per_usdt > 0:
+            executed_cngn = executed_usdt * avg_price_cngn_per_usdt
+            realized_price = Decimal(1) / avg_price_cngn_per_usdt
+        else:
+            executed_cngn = amount_usd / price_usd_per_cngn
+            realized_price = price_usd_per_cngn
         return ArbitrageTrade(
             id=0,
             opportunity_id=opportunity_id,
             venue=venue_name,
             side="buy",
-            amount=executed_cngn if success else amount_cngn,
-            price=avg_price if success else limit_price,
+            amount=executed_cngn,
+            price=realized_price,
             status="submitted" if success else "failed",
             timestamp=_now_ms(),
             error=error,
@@ -221,20 +235,45 @@ class ArbitrageExecutor:
         self,
         venue_name: str,
         amount_cngn: Decimal,
-        limit_price: Decimal,
+        price_usd_per_cngn: Decimal,
         opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """Place a market sell order on a CEX."""
+        """Dispose of `amount_cngn` cNGN on a CEX for USDT.
+
+        The Quidax market is ``usdtcngn`` (base USDT), so dumping cNGN means
+        *buying* USDT off the ask side, paid for in cNGN. Quidax denominates the
+        order ``volume`` in USDT, so we size it by walking the live ask book for
+        `amount_cngn`: the most USDT those cNGN can buy. This guarantees the cNGN
+        actually spent never exceeds the holdings produced by the buy leg, which
+        is why a cNGN quantity must never be passed straight through as `volume`.
+        """
         venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
 
-        success, executed_cngn, avg_price, error = await venue.place_market_order("sell", amount_cngn)
+        depth = await venue.get_order_book_depth()
+        if depth is None or not depth.asks:
+            return ArbitrageTrade(
+                id=0, opportunity_id=opportunity_id, venue=venue_name, side="sell",
+                amount=amount_cngn, price=price_usd_per_cngn, status="failed",
+                timestamp=_now_ms(), error="No Quidax ask depth to size market buy",
+            )
+        usdt_volume, _ = walk_orderbook_asks(depth.asks, amount_cngn, QUIDAX_FEE)
+
+        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.place_market_order(
+            "buy", usdt_volume
+        )
+        if success and avg_price_cngn_per_usdt > 0:
+            executed_cngn = executed_usdt * avg_price_cngn_per_usdt
+            realized_price = Decimal(1) / avg_price_cngn_per_usdt
+        else:
+            executed_cngn = amount_cngn
+            realized_price = price_usd_per_cngn
         return ArbitrageTrade(
             id=0,
             opportunity_id=opportunity_id,
             venue=venue_name,
             side="sell",
-            amount=executed_cngn if success else amount_cngn,
-            price=avg_price if success else limit_price,
+            amount=executed_cngn,
+            price=realized_price,
             status="submitted" if success else "failed",
             timestamp=_now_ms(),
             error=error,

@@ -722,18 +722,26 @@ class QuidaxAdapter(VenueAdapter):
     async def place_market_order(
         self,
         side: str,
-        amount: Decimal,
+        volume_usdt: Decimal,
     ) -> tuple[bool, Decimal, Decimal, str | None]:
         """
         Place a market order with up to 5 retries on network/5xx errors.
+
+        The configured market is ``usdtcngn`` (base USDT, quote cNGN), so Quidax
+        denominates ``volume`` in the base asset, USDT — not cNGN. Mapping a
+        cNGN-side arb intent onto the correct side and USDT volume is the
+        caller's job (see ArbitrageExecutor.execute_cex_buy/sell); this method is
+        a thin transport that submits exactly what it is given.
+
         Args:
-            side: "buy" or "sell"
-            amount: Order amount in CNGN
+            side: Literal Quidax side — "buy" buys USDT (pays cNGN),
+                "sell" sells USDT (receives cNGN)
+            volume_usdt: Order volume in USDT (the base asset)
         Returns:
-            (success, executed_cngn, avg_price_usdt, error)
+            (success, executed_usdt, avg_price_cngn_per_usdt, error)
         """
         client = await self._get_client()
-        payload = {"market": self.market, "side": side, "ord_type": "market", "volume": str(amount)}
+        payload = {"market": self.market, "side": side, "ord_type": "market", "volume": str(volume_usdt)}
         last_error: str | None = None
 
         for attempt, delay in enumerate([0, 2, 4, 8, 16, 32]):
@@ -786,16 +794,18 @@ class QuidaxAdapter(VenueAdapter):
                     return False, Decimal("0"), Decimal("0"), error
                     
                 data = resp_json.get("data", {})
-                
-                # Safely extract amounts handling both string and dict formats from Quidax
+
+                # Safely extract amounts handling both string and dict formats from Quidax.
+                # executed_volume is the filled base-asset (USDT) amount; avg_price is
+                # quoted in cNGN per USDT for the usdtcngn market.
                 vol_data = data.get("executed_volume", "0")
-                executed_cngn = Decimal(str(vol_data.get("amount", "0") if isinstance(vol_data, dict) else vol_data))
-                    
+                executed_usdt = Decimal(str(vol_data.get("amount", "0") if isinstance(vol_data, dict) else vol_data))
+
                 price_data = data.get("avg_price", "0")
                 avg_price = Decimal(str(price_data.get("amount", "0") if isinstance(price_data, dict) else price_data))
-                    
-                logger.debug("market_order_placed", side=side, amount=float(amount), attempt=attempt)
-                return True, executed_cngn, avg_price, None
+
+                logger.debug("market_order_placed", side=side, volume_usdt=float(volume_usdt), attempt=attempt)
+                return True, executed_usdt, avg_price, None
                 
             except Exception as e:
                 last_error = str(e)

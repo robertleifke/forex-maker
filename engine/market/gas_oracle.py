@@ -50,19 +50,29 @@ def gas_usd_bsc() -> Decimal | None:
     return _state.get("gas_usd_bsc")
 
 
-async def _fetch_gas_price_gwei(rpc_url: str) -> Decimal:
-    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
-    wei = await w3.eth.gas_price
-    return Decimal(wei) / Decimal(10**9)
+async def _fetch_gas_price_gwei(label: str, rpc_url: str) -> Decimal:
+    # Timeout exceptions stringify to empty, so logging must capture the type and
+    # repr to be diagnosable. The label identifies which leg of the gather failed.
+    try:
+        w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
+        wei = await w3.eth.gas_price
+        return Decimal(wei) / Decimal(10**9)
+    except Exception as e:
+        logger.error("gas_oracle_fetch_call_failed", call=label, error_type=type(e).__name__, error=repr(e))
+        raise RuntimeError(f"{label}: {type(e).__name__}: {e!r}") from e
 
 
 async def _fetch_native_prices(alchemy_key: str) -> tuple[Decimal, Decimal]:
     url = f"https://api.g.alchemy.com/prices/v1/{alchemy_key}/tokens/by-symbol"
-    async with httpx.AsyncClient(timeout=5) as client:
-        resp = await client.get(url, params={"symbols": ["ETH", "BNB"]})
-        resp.raise_for_status()
-        prices = {item["symbol"]: Decimal(item["prices"][0]["value"]) for item in resp.json()["data"]}
-        return prices["ETH"], prices["BNB"]
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url, params={"symbols": ["ETH", "BNB"]})
+            resp.raise_for_status()
+            prices = {item["symbol"]: Decimal(item["prices"][0]["value"]) for item in resp.json()["data"]}
+            return prices["ETH"], prices["BNB"]
+    except Exception as e:
+        logger.error("gas_oracle_fetch_call_failed", call="native_prices", error_type=type(e).__name__, error=repr(e))
+        raise RuntimeError(f"native_prices: {type(e).__name__}: {e!r}") from e
 
 
 async def update() -> None:
@@ -76,8 +86,8 @@ async def update() -> None:
 
     try:
         gas_gwei_base, gas_gwei_bsc, (eth_usd, bnb_usd) = await asyncio.gather(
-            _fetch_gas_price_gwei(settings.base_rpc_url),
-            _fetch_gas_price_gwei(settings.bsc_rpc_url),
+            _fetch_gas_price_gwei("base_gas_price", settings.base_rpc_url),
+            _fetch_gas_price_gwei("bsc_gas_price", settings.bsc_rpc_url),
             _fetch_native_prices(settings.alchemy_key),
         )
     except Exception as e:

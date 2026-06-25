@@ -1,5 +1,7 @@
 .claude/
 .env
+.env.local
+dashboard/.env.local
 .venv/
 __pycache__/
 *.pyc

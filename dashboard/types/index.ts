@@ -151,6 +151,8 @@ export interface ArbitrageHistoryItem {
   sell_wallet?: ArbitrageHistoryWalletSnapshot;
   buy_tx_hash?: string;
   sell_tx_hash?: string;
+  buy_amount_cngn?: number;
+  cngn_transferred?: number;
 }
 
 export interface ArbitrageStatus {
@@ -168,6 +170,11 @@ export interface ArbitrageStatus {
   consecutive_failures: number;
   params: ArbitrageParams;
   low_inventory_venues: string[];
+  opportunities_detected_total: number;
+  opportunities_executed_total: number;
+  total_profit_all_time_usd: number;
+  total_volume_all_time_usd: number;
+  volume_24h_usd: number;
 }
 
 // Order Book Types

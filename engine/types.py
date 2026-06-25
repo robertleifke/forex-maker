@@ -300,6 +300,7 @@ class ArbitrageTrade(BaseModel):
     side: Literal["buy", "sell"]
     amount: Decimal  # In cNGN
     price: Optional[Decimal] = None  # Actual execution price
+    usd_out: Optional[Decimal] = None  # Actual stablecoin received (sell leg only, from output_raw)
     tx_hash: Optional[str] = None
     status: Literal["pending", "submitted", "confirmed", "failed"]
     timestamp: int
@@ -338,6 +339,8 @@ class ArbitrageHistoryEvent(BaseModel):
     sell_wallet: Optional[ArbitrageHistoryWalletSnapshot] = None
     buy_tx_hash: Optional[str] = None
     sell_tx_hash: Optional[str] = None
+    buy_amount_cngn: Optional[Decimal] = None
+    cngn_transferred: Optional[Decimal] = None
 
 
 class ArbitrageHistoryItem(BaseModel):
@@ -364,6 +367,8 @@ class ArbitrageHistoryItem(BaseModel):
     sell_wallet: Optional[ArbitrageHistoryWalletSnapshot] = None
     buy_tx_hash: Optional[str] = None
     sell_tx_hash: Optional[str] = None
+    buy_amount_cngn: Optional[Decimal] = None
+    cngn_transferred: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -387,6 +392,11 @@ class ArbitrageStatus(BaseModel):
     total_profit_24h_usd: Decimal
     daily_volume_usd: Decimal
     inventory_imbalance_usd: Decimal
+    opportunities_detected_total: int = 0
+    opportunities_executed_total: int = 0
+    total_profit_all_time_usd: Decimal = Decimal("0")
+    total_volume_all_time_usd: Decimal = Decimal("0")
+    volume_24h_usd: Decimal = Decimal("0")
     circuit_breaker_active: bool
     consecutive_failures: int
     params: ArbitrageParams

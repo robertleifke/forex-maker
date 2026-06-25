@@ -305,7 +305,8 @@ class ArbitrageEngine:
 
     async def get_status(self) -> ArbitrageStatus:
         now = int(time.time() * 1000)
-        stats = await self.arbitrage_store.get_arbitrage_stats(now - 86400000)
+        stats_24h = await self.arbitrage_store.get_arbitrage_stats(now - 86400000)
+        stats_all = await self.arbitrage_store.get_arbitrage_stats(0)
         inv = self.inventory.get_status_dict()
 
         return ArbitrageStatus(
@@ -313,15 +314,20 @@ class ArbitrageEngine:
             execute_cex_dex=self.execute_cex_dex_enabled,
             execute_dex_dex=self.execute_dex_dex_enabled,
             last_scan_timestamp=None,
-            opportunities_detected_24h=stats["opportunities_detected"],
-            opportunities_executed_24h=stats["opportunities_executed"],
-            total_profit_24h_usd=stats["total_profit_usd"],
+            opportunities_detected_24h=stats_24h["opportunities_detected"],
+            opportunities_executed_24h=stats_24h["opportunities_executed"],
+            total_profit_24h_usd=stats_24h["total_profit_usd"],
             daily_volume_usd=inv["daily_volume_usd"],
             inventory_imbalance_usd=inv["cngn_imbalance_usd"],
             circuit_breaker_active=inv["circuit_breaker_active"],
             consecutive_failures=inv["consecutive_failures"],
             params=self.params,
             low_inventory_venues=inv["low_inventory_venues"],
+            opportunities_detected_total=stats_all["opportunities_detected"],
+            opportunities_executed_total=stats_all["opportunities_executed"],
+            total_profit_all_time_usd=stats_all["total_profit_usd"],
+            total_volume_all_time_usd=stats_all["total_volume_usd"],
+            volume_24h_usd=stats_24h["total_volume_usd"],
         )
 
     def update_params(self, params: ArbitrageParams) -> None:

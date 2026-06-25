@@ -55,6 +55,8 @@ def _event_from_joined_row(row: aiosqlite.Row) -> ArbitrageHistoryEvent:
         ),
         buy_tx_hash=row["buy_tx_hash"],
         sell_tx_hash=row["sell_tx_hash"],
+        buy_amount_cngn=Decimal(str(row["buy_amount_cngn"])) if row["buy_amount_cngn"] is not None else None,
+        cngn_transferred=Decimal(str(row["cngn_transferred"])) if row["cngn_transferred"] is not None else None,
     )
 
 
@@ -193,7 +195,8 @@ async def get_arbitrage_history(
         detail_params.append(to_ts)
     cursor = await conn.execute(
         f"""
-        SELECT e.*, a.pipeline, a.direction, a.buy_venue, a.sell_venue
+        SELECT e.*, a.pipeline, a.direction, a.buy_venue, a.sell_venue,
+               a.buy_amount_cngn, a.cngn_transferred
         FROM arb_history_events e
         JOIN arb_attempts a ON a.id = e.attempt_id
         WHERE {' AND '.join(detail_filters)}
@@ -238,6 +241,8 @@ async def get_arbitrage_history(
                 sell_wallet=routed.sell_wallet,
                 buy_tx_hash=latest.buy_tx_hash,
                 sell_tx_hash=latest.sell_tx_hash,
+                buy_amount_cngn=final.buy_amount_cngn,
+                cngn_transferred=final.cngn_transferred,
             )
         )
     return items

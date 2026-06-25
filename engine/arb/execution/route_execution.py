@@ -238,10 +238,13 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                 opp_id,
             )
         else:
-            assert sell_cngn_amount is not None
+            # Use actual cNGN received from the buy, not the pre-buy pool estimate.
+            # sell_cngn_amount is kept as the preflight/slippage reference only.
+            actual_sell_cngn = buy_trade.amount if buy_trade.amount > 0 else sell_cngn_amount
+            assert actual_sell_cngn is not None
             sell_trade = await engine.executor.execute_dex_sell(
                 sell_venue_name,
-                sell_cngn_amount,
+                actual_sell_cngn,
                 min_out_usd,
                 opp_id,
             )
@@ -262,7 +265,15 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
             broadcast_type = "arb_executed"
         else:
             cngn_price = Decimal(str(c.signal.get("prices", {}).get(sell_venue_name, "0")))
-            actual_profit = sell_trade.amount * (sell_trade.price or cngn_price) - size_usd
+            if sell_trade.usd_out is not None:
+                # Best case: actual USDC received parsed directly from the Swap event.
+                actual_stable_out = sell_trade.usd_out
+            elif sell_trade.price and sell_trade.price > 0:
+                # output_raw unavailable — estimate from fill price × actual cNGN sent.
+                actual_stable_out = sell_trade.amount * sell_trade.price
+            else:
+                actual_stable_out = sell_trade.amount * cngn_price
+            actual_profit = actual_stable_out - size_usd
             await arbitrage_store.update_dex_arbitrage_execution_state(
                 opp_id,
                 status="completed",

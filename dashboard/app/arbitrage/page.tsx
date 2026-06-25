@@ -53,14 +53,35 @@ export default function ArbitragePage() {
             <>
               {/* Metrics */}
               {[
-                { label: 'PROFIT 24H', value: formatCurrency(status?.total_profit_24h_usd || 0), color: 'text-emerald-400' },
-                { label: 'VOLUME 24H', value: formatCurrency(status?.daily_volume_usd || 0), color: 'text-white/75' },
-                { label: 'IMBALANCE',  value: formatCurrency(status?.inventory_imbalance_usd || 0), color: 'text-amber-400' },
-                { label: 'EXEC / FOUND', value: `${status?.opportunities_executed_24h || 0} / ${status?.opportunities_detected_24h || 0}`, color: 'text-white/60' },
-              ].map(({ label, value, color }) => (
+                {
+                  label: 'TOTAL PROFIT',
+                  value: formatCurrency(status?.total_profit_all_time_usd || 0),
+                  sub: `${formatCurrency(status?.total_profit_24h_usd || 0)} 24h`,
+                  color: 'text-emerald-400',
+                },
+                {
+                  label: 'TOTAL VOLUME',
+                  value: formatCurrency(status?.total_volume_all_time_usd || 0),
+                  sub: `${formatCurrency(status?.volume_24h_usd || 0)} 24h`,
+                  color: 'text-white/75',
+                },
+                {
+                  label: 'IMBALANCE',
+                  value: formatCurrency(status?.inventory_imbalance_usd || 0),
+                  sub: null,
+                  color: 'text-amber-400',
+                },
+                {
+                  label: 'EXEC / FOUND',
+                  value: `${status?.opportunities_executed_total || 0} / ${status?.opportunities_detected_total || 0}`,
+                  sub: `${status?.opportunities_executed_24h || 0} / ${status?.opportunities_detected_24h || 0} 24h`,
+                  color: 'text-white/60',
+                },
+              ].map(({ label, value, sub, color }) => (
                 <div key={label} className="flex flex-col justify-center px-5 py-3 border-r border-white/[0.05] min-w-[100px]">
                   <span className="text-[7.5px] font-mono tracking-[0.18em] uppercase text-white/25 mb-1">{label}</span>
                   <span className={`text-[15px] font-mono font-bold leading-none tabular-nums ${color}`}>{value}</span>
+                  {sub && <span className="text-[9px] font-mono text-white/20 mt-0.5 tabular-nums">{sub}</span>}
                 </div>
               ))}
 

@@ -352,7 +352,7 @@ async def get_arbitrage_stats(conn: aiosqlite.Connection, from_ts: int) -> dict[
             COUNT(*) AS total_detected,
             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS total_executed,
             SUM(CASE WHEN status = 'completed' THEN actual_profit_usd ELSE 0 END) AS total_profit,
-            SUM(COALESCE(executed_size_usd, optimal_size_usd, 0)) AS total_volume
+            SUM(CASE WHEN status = 'completed' THEN COALESCE(executed_size_usd, 0) ELSE 0 END) AS total_volume
         FROM arb_attempts
         WHERE detected_at_ms >= ?
         """,

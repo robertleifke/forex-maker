@@ -79,6 +79,20 @@ export const VENUE_LABELS: Record<string, VenueLabel> = {
   bybit: { name: 'Bybit P2P', chain: 'P2P', type: 'P2P' },
 };
 
+const CHAIN_EXPLORERS: Record<string, string> = {
+  Base: 'https://basescan.org/tx/',
+  BSC: 'https://bscscan.com/tx/',
+  Mainnet: 'https://scan.assetchain.org/tx/',
+};
+
+export function txExplorerUrl(venue: string, txHash: string): string | null {
+  const chain = VENUE_LABELS[venue]?.chain;
+  if (!chain) return null;
+  const base = CHAIN_EXPLORERS[chain];
+  if (!base) return null;
+  return `${base}${txHash}`;
+}
+
 export const VENUE_COLORS: Record<string, string> = {
   bybit: '#F7931A',
   quidax: '#2E7D32',

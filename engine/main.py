@@ -207,7 +207,7 @@ def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
     return lp_managers
 
 
-async def _seed_lp_token_ids_if_empty(db: Any, lp_managers: dict) -> None:
+async def _seed_lp_token_ids_if_empty(db: Any, lp_managers: dict[str, Any]) -> None:
     """On first startup, populate lp_token_ids from on-chain balanceOf/ownerOf.
 
     Subsequent startups skip this because the DB already has the IDs.

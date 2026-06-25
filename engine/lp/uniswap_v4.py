@@ -152,6 +152,7 @@ class V4TxContext(Protocol):
         account: "LocalAccount",
         *,
         output_token: str | None = None,
+        parse_token_id: bool = False,
     ) -> TxResult: ...
 
     def _build_swap_tx(

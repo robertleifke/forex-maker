@@ -238,13 +238,17 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                 opp_id,
             )
         else:
-            # Use actual cNGN received from the buy, not the pre-buy pool estimate.
-            # sell_cngn_amount is kept as the preflight/slippage reference only.
-            actual_sell_cngn = buy_trade.amount if buy_trade.amount > 0 else sell_cngn_amount
-            assert actual_sell_cngn is not None
+            assert sell_cngn_amount is not None
+            # DEX-DEX only: use actual cNGN received from the buy instead of the
+            # pre-buy pool estimate so the sell amount matches what's in the wallet.
+            # CEX-DEX keeps sell_cngn_amount to stay aligned with the preflight.
+            dex_sell_cngn = (
+                buy_trade.amount if (not buy_is_cex and buy_trade.amount > 0)
+                else sell_cngn_amount
+            )
             sell_trade = await engine.executor.execute_dex_sell(
                 sell_venue_name,
-                actual_sell_cngn,
+                dex_sell_cngn,
                 min_out_usd,
                 opp_id,
             )

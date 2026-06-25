@@ -321,8 +321,8 @@ async def _refresh_pool(config: V4PoolReadConfig, gap_from_ts: float | None = No
     for rpc_url in _rpc_candidates(config):
         try:
             state = await _scan_pool_window_from_rpc(config, rpc_url, from_ts=gap_from_ts)
-            if was_seeded:
-                # Merge gap swaps into existing state rather than replacing
+            if was_seeded and gap_from_ts is not None:
+                # Gap fill: merge only the new swaps since the last save.
                 for entry in state.swaps:
                     _STORE.record(
                         config.pool_address,

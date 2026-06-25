@@ -128,7 +128,7 @@ def _make_lp_snapshot_adapter(
     adapter = SimpleNamespace(
         name="uni-base",
         config=config,
-        get_owned_positions=lambda: [pos.token_id for pos in positions],
+        get_owned_positions=lambda known_token_ids=None: [pos.token_id for pos in positions],
         _get_live_pool_snapshot=lambda: (
             live_market
             if live_market is not None
@@ -862,7 +862,7 @@ def _make_fake_venue(
         token0_decimals=token0_decimals,
         token1_decimals=token1_decimals,
     )
-    venue.get_owned_positions = lambda: token_ids
+    venue.get_owned_positions = lambda known_token_ids=None: token_ids
     venue.get_position_state = lambda token_id: position_state
     venue.calculate_mint_amounts = lambda: (amount0, amount1)
     venue.prepare_lp_balance = AsyncMock(return_value=None)

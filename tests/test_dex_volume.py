@@ -128,7 +128,7 @@ def test_refresh_failure_hides_seeded_volume(monkeypatch, tmp_path):
 
     monkeypatch.setattr(dex_volume, "_STORE", store)
 
-    async def _boom(config, rpc_url: str):
+    async def _boom(config, rpc_url: str, from_ts: float | None = None):
         raise RuntimeError("fail")
 
     monkeypatch.setattr(dex_volume, "_scan_pool_window_from_rpc", _boom)
@@ -154,7 +154,7 @@ def test_refresh_failure_does_not_leave_partial_volume_visible(monkeypatch, tmp_
 
     monkeypatch.setattr(dex_volume, "_STORE", store)
 
-    async def _partial(config, rpc_url: str):
+    async def _partial(config, rpc_url: str, from_ts: float | None = None):
         staged = dex_volume._PoolVolumeState()
         staged.swaps.append((now_ms, Decimal("10"), "tx2:0"))
         staged.total_usd = Decimal("10")
@@ -185,7 +185,7 @@ def test_refresh_keeps_last_good_volume_visible_until_new_window_is_ready(monkey
     monkeypatch.setattr(dex_volume, "_STORE", store)
     observed: dict[str, Decimal | bool] = {}
 
-    async def _scan(config, rpc_url: str):
+    async def _scan(config, rpc_url: str, from_ts: float | None = None):
         observed["seeded_during_scan"] = store.is_seeded("pool")
         observed["volume_during_scan"] = store.get_24h_volume_usd("pool")
         staged = dex_volume._PoolVolumeState()

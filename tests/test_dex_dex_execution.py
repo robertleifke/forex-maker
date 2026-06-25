@@ -67,7 +67,13 @@ class FakeV4Venue:
     async def swap(self, token_in, amount_in, min_out):
         self.swap_calls.append((token_in, amount_in, min_out))
         if self._swap_ok:
-            return TxResult(hash="0xbuytx", status="confirmed", output_raw=amount_in)
+            # Buy leg (stable→cNGN): return a realistic cNGN output matching the pool estimate.
+            # Sell leg (cNGN→stable): echo back the input as stable output.
+            if token_in == self.stable_address:
+                output_raw = 140_000 * 10 ** self.cngn_decimals  # 140,000 cNGN
+            else:
+                output_raw = amount_in
+            return TxResult(hash="0xbuytx", status="confirmed", output_raw=output_raw)
         return TxResult(hash="", status="failed", error="execution reverted: TRANSFER_FROM_FAILED: 0x08c379a0")
 
     async def get_current_price(self):
@@ -201,7 +207,7 @@ class TestPreflightGate:
         # Preflight used the pool estimate amount.
         assert len(sell_venue.sim_calls) == 1
         assert sell_venue.sim_calls[0][0] == sell_venue.cngn_address
-        # Live sell uses the same estimate that the sell-side preflight validated.
+        # Live sell uses the actual cNGN received from the buy (140,000 cNGN at 6 decimals).
         assert sell_venue.swap_calls[0] == (sell_venue.cngn_address, 140000000000, 499500000)
 
 # =============================================================================

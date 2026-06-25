@@ -1,4 +1,5 @@
 """Position snapshot queries."""
+# lp_token_ids table is created in the migration if not exists block at DB open time.
 
 from __future__ import annotations
 
@@ -33,5 +34,29 @@ async def insert_position(conn: aiosqlite.Connection, position: Position) -> Non
             float(position.volume_24h_usd) if position.volume_24h_usd is not None else None,
             json.dumps({k: float(v) for k, v in position.rates.items()}) if position.rates else None,
         ),
+    )
+    await conn.commit()
+
+
+async def save_lp_token_id(conn: aiosqlite.Connection, venue: str, token_id: int) -> None:
+    await conn.execute(
+        "INSERT OR IGNORE INTO lp_token_ids (venue, token_id) VALUES (?, ?)",
+        (venue, token_id),
+    )
+    await conn.commit()
+
+
+async def get_lp_token_ids(conn: aiosqlite.Connection, venue: str) -> list[int]:
+    cursor = await conn.execute(
+        "SELECT token_id FROM lp_token_ids WHERE venue = ?", (venue,)
+    )
+    rows = await cursor.fetchall()
+    return [row[0] for row in rows]
+
+
+async def remove_lp_token_id(conn: aiosqlite.Connection, venue: str, token_id: int) -> None:
+    await conn.execute(
+        "DELETE FROM lp_token_ids WHERE venue = ? AND token_id = ?",
+        (venue, token_id),
     )
     await conn.commit()

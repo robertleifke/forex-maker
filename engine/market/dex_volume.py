@@ -207,6 +207,12 @@ class RollingDexVolumeStore:
 
 _STORE = RollingDexVolumeStore(_DEFAULT_STORE_PATH)
 
+# Approximate block times used to estimate block ranges without binary search
+_BLOCKS_PER_DAY = {
+    "base": 43_200,  # ~2s blocks
+    "bsc": 28_800,   # ~3s blocks
+}
+
 
 def _rpc_candidates(config: V4PoolReadConfig) -> list[str]:
     candidates = [config.rpc_url]
@@ -252,33 +258,32 @@ async def _block_timestamp_ms(w3: AsyncWeb3, block_number: int, cache: dict[int,
     return cache[block_number]
 
 
-async def _find_start_block_24h_ago(w3: AsyncWeb3) -> int:
+async def _estimate_block_for_timestamp(
+    w3: AsyncWeb3, config: V4PoolReadConfig, target_ts: float
+) -> int:
+    """Estimate block number at a given unix timestamp using average block time."""
     latest = await w3.eth.get_block("latest")
     latest_number = int(latest["number"])
-    target_ts = int(latest["timestamp"]) - 86400
-
-    lo = 0
-    hi = latest_number
-    while lo < hi:
-        mid = (lo + hi) // 2
-        block = await w3.eth.get_block(mid)
-        if int(block["timestamp"]) < target_ts:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
+    latest_ts = int(latest["timestamp"])
+    blocks_per_day = _BLOCKS_PER_DAY.get(config.chain_id_str, 43_200)
+    seconds_ago = latest_ts - target_ts
+    blocks_ago = int(seconds_ago * blocks_per_day / 86400)
+    return max(0, latest_number - blocks_ago)
 
 
 async def _scan_pool_window_from_rpc(
     config: V4PoolReadConfig,
     rpc_url: str,
+    from_ts: float | None = None,
 ) -> _PoolVolumeState:
+    """Scan swap logs from from_ts (unix) to now. Defaults to 24h ago."""
     w3 = _make_async_w3(config, rpc_url)
     latest = await w3.eth.get_block("latest")
     latest_number = int(latest["number"])
     state = _PoolVolumeState()
 
-    start_24h_block = await _find_start_block_24h_ago(w3)
+    window_start_ts = from_ts if from_ts is not None else (time.time() - 86400)
+    start_24h_block = await _estimate_block_for_timestamp(w3, config, window_start_ts)
     if start_24h_block > latest_number:
         return state
 
@@ -310,17 +315,26 @@ async def _scan_pool_window_from_rpc(
     return state
 
 
-async def _refresh_pool(config: V4PoolReadConfig) -> None:
+async def _refresh_pool(config: V4PoolReadConfig, gap_from_ts: float | None = None) -> None:
     last_error: Exception | None = None
     was_seeded = _STORE.is_seeded(config.pool_address)
     for rpc_url in _rpc_candidates(config):
         try:
-            state = await _scan_pool_window_from_rpc(config, rpc_url)
+            state = await _scan_pool_window_from_rpc(config, rpc_url, from_ts=gap_from_ts)
             if was_seeded:
-                logger.info("dex_volume_resync_succeeded", pool=config.pool_address, rpc=rpc_url)
+                # Merge gap swaps into existing state rather than replacing
+                for entry in state.swaps:
+                    _STORE.record(
+                        config.pool_address,
+                        entry[1],
+                        timestamp_ms=entry[0],
+                        event_id=entry[2],
+                        allow_unseeded=True,
+                    )
+                logger.info("dex_volume_gap_fill_succeeded", pool=config.pool_address, rpc=rpc_url, new_swaps=len(state.swaps))
             else:
+                _STORE.replace_seeded(config.pool_address, state)
                 logger.info("dex_volume_backfill_succeeded", pool=config.pool_address, rpc=rpc_url)
-            _STORE.replace_seeded(config.pool_address, state)
             return
         except Exception as exc:
             last_error = exc
@@ -331,7 +345,11 @@ async def _refresh_pool(config: V4PoolReadConfig) -> None:
 
 
 async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> None:
-    """Restore and backfill rolling 24h volume for tracked DEX pools."""
+    """Restore and backfill rolling 24h volume for tracked DEX pools.
+
+    On restart, only scans the gap since the file was last saved — not the full 24h.
+    First-ever startup (no file) scans the full 24h window.
+    """
     if configs is None:
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
@@ -340,9 +358,15 @@ async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> 
 
     _STORE.load()
 
+    # Use file mtime as the gap start — we already have data up to that point
+    gap_from_ts: float | None = None
+    if _STORE.path.exists():
+        gap_from_ts = _STORE.path.stat().st_mtime
+
     for config in configs:
         try:
-            await _refresh_pool(config)
+            pool_gap = gap_from_ts if _STORE.is_seeded(config.pool_address) else None
+            await _refresh_pool(config, gap_from_ts=pool_gap)
         except Exception as exc:
             logger.warning("dex_volume_backfill_failed", pool=config.pool_address, error=str(exc))
 

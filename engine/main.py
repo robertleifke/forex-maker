@@ -207,6 +207,27 @@ def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
     return lp_managers
 
 
+async def _seed_lp_token_ids_if_empty(db: Any, lp_managers: dict) -> None:
+    """On first startup, populate lp_token_ids from on-chain balanceOf/ownerOf.
+
+    Subsequent startups skip this because the DB already has the IDs.
+    After this runs once, mint/remove events keep the table up to date.
+    """
+    for venue_name, manager in lp_managers.items():
+        existing = await db.positions.get_lp_token_ids(venue_name)
+        if existing:
+            logger.info("lp_token_ids_already_seeded", venue=venue_name, token_ids=existing)
+            continue
+        try:
+            loop = asyncio.get_event_loop()
+            token_ids = await loop.run_in_executor(None, manager.get_owned_positions)
+            for token_id in token_ids:
+                await db.positions.save_lp_token_id(venue_name, token_id)
+            logger.info("lp_token_ids_seeded", venue=venue_name, token_ids=token_ids)
+        except Exception as exc:
+            logger.warning("lp_token_ids_seed_failed", venue=venue_name, error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
@@ -241,6 +262,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     lp_managers = init_lp_managers(venues)
     await restore_venue_params(db, venues, lp_managers)
+    await _seed_lp_token_ids_if_empty(db, lp_managers)
 
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states

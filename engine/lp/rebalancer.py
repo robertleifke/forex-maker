@@ -8,7 +8,7 @@ from typing import Any, Callable
 import structlog
 
 from engine.config import settings
-from engine.db.backend import ActionStoreProtocol, PriceStoreProtocol, VenueConfigStoreProtocol
+from engine.db.backend import ActionStoreProtocol, PositionStoreProtocol, PriceStoreProtocol, VenueConfigStoreProtocol
 from engine.lp import strategy
 from engine.lp.types import LPBalanceSwapResult
 from engine.lp.uniswap_v4 import LPVenueProtocol
@@ -25,12 +25,14 @@ class LPRebalancer:
         price_store: PriceStoreProtocol,
         venue_config_store: VenueConfigStoreProtocol,
         action_store: ActionStoreProtocol,
+        position_store: PositionStoreProtocol | None = None,
         auto_management_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.broadcast = broadcast
         self._price_store = price_store
         self._venue_config_store = venue_config_store
         self._action_store = action_store
+        self._position_store = position_store
         self._auto_management_enabled = auto_management_enabled or (lambda: True)
         self._venue_locks: dict[str, asyncio.Lock] = {}
         self._active_multi_position_incidents: dict[str, str] = {}
@@ -74,7 +76,8 @@ class LPRebalancer:
 
     async def _check_and_rebalance_locked(self, venue: LPVenueProtocol) -> None:
         """Check position state; rebalance if out of range past threshold."""
-        token_ids = venue.get_owned_positions()
+        known_ids = await self._position_store.get_lp_token_ids(venue.name) if self._position_store else None
+        token_ids = venue.get_owned_positions(known_token_ids=known_ids or None)
         if len(token_ids) > 1:
             incident_key = self._multi_position_incident_key(venue.name, token_ids)
             message = (
@@ -309,7 +312,9 @@ class LPRebalancer:
             )
 
             if result.status == "confirmed":
-                logger.info("dex_position_created", venue=venue.name, tx_hash=result.hash)
+                logger.info("dex_position_created", venue=venue.name, tx_hash=result.hash, token_id=result.token_id)
+                if result.token_id is not None and self._position_store is not None:
+                    await self._position_store.save_lp_token_id(venue.name, result.token_id)
                 self.broadcast({
                     "type": "action",
                     "data": {"venue": venue.name, "action": "position_created", "tx": result.hash},
@@ -326,6 +331,7 @@ class LPRebalancer:
                         "amount0_raw": amount0,
                         "amount1_raw": amount1,
                         "recovery_price": recovery_price,
+                        "token_id": result.token_id,
                     },
                 )
                 return True
@@ -456,6 +462,9 @@ class LPRebalancer:
                 })
                 return False
 
+            if self._position_store is not None:
+                await self._position_store.remove_lp_token_id(venue.name, token_id)
+
             await self._action_store.insert_action(
                 venue=venue.name,
                 action_type="remove_position",
@@ -488,8 +497,11 @@ class LPRebalancer:
         """Remove all positions for a venue under the shared LP lifecycle lock."""
         async with self._get_venue_lock(venue.name):
             results: list[dict[str, Any]] = []
-            for token_id in venue.get_owned_positions():
+            known_ids = await self._position_store.get_lp_token_ids(venue.name) if self._position_store else None
+            for token_id in venue.get_owned_positions(known_token_ids=known_ids or None):
                 result = await venue.remove_position(token_id, recipient=recipient)
+                if result.status == "confirmed" and self._position_store is not None:
+                    await self._position_store.remove_lp_token_id(venue.name, token_id)
                 metadata: dict[str, Any] = {"token_id": token_id}
                 if recipient:
                     metadata["recipient"] = recipient

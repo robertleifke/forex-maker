@@ -61,6 +61,15 @@ class PositionStore(_Store):
     async def insert_position(self, position: Position) -> None:
         await positions.insert_position(self._conn, position)
 
+    async def save_lp_token_id(self, venue: str, token_id: int) -> None:
+        await positions.save_lp_token_id(self._conn, venue, token_id)
+
+    async def get_lp_token_ids(self, venue: str) -> list[int]:
+        return await positions.get_lp_token_ids(self._conn, venue)
+
+    async def remove_lp_token_id(self, venue: str, token_id: int) -> None:
+        await positions.remove_lp_token_id(self._conn, venue, token_id)
+
 
 class ActionStore(_Store):
     async def insert_action(self, **kwargs: Any) -> int | None:

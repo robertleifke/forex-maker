@@ -455,6 +455,7 @@ class BaseV4DexAdapter(VenueAdapter):
         account: LocalAccount,
         *,
         output_token: str | None = None,
+        parse_token_id: bool = False,
     ) -> TxResult:
         try:
             if account.address not in self._nonce_locks:
@@ -478,15 +479,27 @@ class BaseV4DexAdapter(VenueAdapter):
                 gas_used=receipt["gasUsed"],
             )
             output_raw = self._parse_swap_output_raw(receipt, output_token) if output_token and status == "confirmed" else None
+            token_id = self._parse_mint_token_id(receipt) if parse_token_id and status == "confirmed" else None
             return TxResult(
                 hash=tx_hash_str,
                 status=status,
                 gas_used=receipt["gasUsed"],
                 output_raw=output_raw,
+                token_id=token_id,
             )
         except Exception as e:
             logger.error("transaction_failed", venue=self.name, account=account.address, error=str(e))
             return TxResult(hash="", status="failed", error=str(e))
+
+    def _parse_mint_token_id(self, receipt: TxReceipt) -> Optional[int]:
+        """Extract the minted NFT token ID from a Transfer(from=0x0, to=owner, tokenId) event."""
+        TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        ZERO_TOPIC = "0x" + "0" * 64
+        for log in receipt.get("logs", []):
+            topics = log.get("topics", [])
+            if len(topics) == 4 and coerce_hex_str(topics[0]) == TRANSFER_TOPIC and coerce_hex_str(topics[1]) == ZERO_TOPIC:
+                return int(coerce_hex_str(topics[3]), 16)
+        return None
 
     async def _approve_token_to_permit2_if_needed(
         self,

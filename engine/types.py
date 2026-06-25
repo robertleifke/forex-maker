@@ -95,6 +95,7 @@ class TxResult(BaseModel):
     gas_used: Optional[int] = None
     error: Optional[str] = None
     output_raw: Optional[int] = None  # Raw token output units parsed from the V4 Swap event
+    token_id: Optional[int] = None  # LP position NFT token ID parsed from mint Transfer event
 
 
 # === Order book types ===

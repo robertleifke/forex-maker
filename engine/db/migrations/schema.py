@@ -171,6 +171,11 @@ CREATE TABLE IF NOT EXISTS arb_history_events (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_arb_history_unique
 ON arb_history_events(attempt_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_arb_history_time ON arb_history_events(timestamp_ms DESC);
+CREATE TABLE IF NOT EXISTS lp_token_ids (
+    venue TEXT NOT NULL,
+    token_id INTEGER NOT NULL,
+    PRIMARY KEY (venue, token_id)
+);
 """
 
 

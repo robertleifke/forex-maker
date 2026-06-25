@@ -15,7 +15,7 @@ from web3.types import BlockData, Nonce, TxParams, TxReceipt, Wei
 
 from engine.types import Position, PriceQuote, TxResult
 from engine.config import DexParams
-from engine.web3_utils import as_hexstr, coerce_hex_bytes, coerce_hex_str
+from engine.web3_utils import coerce_hex_bytes, coerce_hex_str
 from engine.venues.base import VenueAdapter
 from .shared import ERC20_ABI, MULTICALL3_ABI, MULTICALL3_ADDRESS, _decode_uint256, _encode_balance_of, sqrt_price_x96_to_decimal
 
@@ -110,25 +110,6 @@ PERMIT2_ABI = [
     },
 ]
 
-POOL_MANAGER_ABI = [
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "bytes32", "name": "id", "type": "bytes32"},
-            {"indexed": True, "internalType": "address", "name": "currency0", "type": "address"},
-            {"indexed": True, "internalType": "address", "name": "currency1", "type": "address"},
-            {"indexed": False, "internalType": "uint24", "name": "fee", "type": "uint24"},
-            {"indexed": False, "internalType": "int24", "name": "tickSpacing", "type": "int24"},
-            {"indexed": False, "internalType": "address", "name": "hooks", "type": "address"},
-            {"indexed": False, "internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
-            {"indexed": False, "internalType": "int24", "name": "tick", "type": "int24"},
-        ],
-        "name": "Initialize",
-        "type": "event",
-    }
-]
-
-
 @dataclass
 class V4ExecutionConfig:
     chain_id: int
@@ -203,10 +184,6 @@ class BaseV4DexAdapter(VenueAdapter):
         self.permit2 = self.w3.eth.contract(
             address=Web3.to_checksum_address(config.permit2),
             abi=PERMIT2_ABI,
-        )
-        self.pool_manager = self.w3.eth.contract(
-            address=Web3.to_checksum_address(config.pool_manager),
-            abi=POOL_MANAGER_ABI,
         )
 
         self.token0 = self.w3.eth.contract(
@@ -405,40 +382,10 @@ class BaseV4DexAdapter(VenueAdapter):
         if self._pool_key is not None:
             return self._pool_key
 
-        try:
-            self._pool_key = self.config.resolve_pool_key()
-            logger.info(
-                "v4_pool_key_resolved",
-                venue=self.name,
-                pool_id=self.config.pool_id,
-                fee=self._pool_key[2],
-                tick_spacing=self._pool_key[3],
-                hooks=self._pool_key[4],
-                source="config",
-            )
-            return self._pool_key
-        except ValueError as exc:
-            logger.warning("v4_pool_key_config_incomplete", venue=self.name, reason=str(exc))
-
-        event_topic = as_hexstr(self.w3.keccak(text="Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)").hex())
-        logs = self.w3.eth.get_logs({
-            "address": Web3.to_checksum_address(self.config.pool_manager),
-            "topics": [event_topic, as_hexstr(self.config.pool_id)],
-            "fromBlock": 0,
-            "toBlock": "latest",
-        })
-        if not logs:
-            raise ValueError(f"Could not resolve pool key for {self.name}: no Initialize event for {self.config.pool_id}")
-
-        decoded = self.pool_manager.events.Initialize().process_log(logs[0])
-        args = decoded["args"]
-        self._pool_key = (
-            Web3.to_checksum_address(args["currency0"]),
-            Web3.to_checksum_address(args["currency1"]),
-            int(args["fee"]),
-            int(args["tickSpacing"]),
-            Web3.to_checksum_address(args["hooks"]),
-        )
+        # The pool key (currencies, fee, tick_spacing, hooks) is required config.
+        # A missing field is a misconfiguration we fail loudly on — not something
+        # to reconstruct from a full-history Initialize log scan.
+        self._pool_key = self.config.resolve_pool_key()
         logger.info(
             "v4_pool_key_resolved",
             venue=self.name,
@@ -446,7 +393,7 @@ class BaseV4DexAdapter(VenueAdapter):
             fee=self._pool_key[2],
             tick_spacing=self._pool_key[3],
             hooks=self._pool_key[4],
-            source="chain",
+            source="config",
         )
         return self._pool_key
 

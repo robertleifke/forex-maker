@@ -13,6 +13,7 @@ from web3.types import TxParams, Wei
 
 from engine.types import LPPosition, Position, TxResult
 from engine.config import DexParams
+from engine.web3_utils import iter_block_chunks, log_scan_chunk_size
 from engine.lp.types import (
     LPBalanceSwapResult,
     LPMarketSnapshot,
@@ -313,56 +314,67 @@ class V4PositionManager:
 
         owner = Web3.to_checksum_address(self._lp_account.address)
         owner_topic = "0x" + owner[2:].lower().rjust(64, "0")
+        pm_address = self._position_manager_contract.address
 
         try:
-            incoming = self._w3.eth.get_logs({
-                "address": self._position_manager_contract.address,
-                "fromBlock": 0,
-                "toBlock": "latest",
-                "topics": [_TRANSFER_EVENT_TOPIC, None, owner_topic],
-            })
-            outgoing = self._w3.eth.get_logs({
-                "address": self._position_manager_contract.address,
-                "fromBlock": 0,
-                "toBlock": "latest",
-                "topics": [_TRANSFER_EVENT_TOPIC, owner_topic],
-            })
+            latest_block = self._w3.eth.block_number
         except Exception as e:
             logger.warning("get_owned_positions_logs_failed", venue=self.name, error=str(e))
             return []
 
-        candidate_ids: set[int] = set()
-        for log in incoming:
-            if len(log["topics"]) > 3:
-                candidate_ids.add(int(log["topics"][3].hex(), 16))
-        for log in outgoing:
-            if len(log["topics"]) > 3:
-                candidate_ids.add(int(log["topics"][3].hex(), 16))
+        known_not_minted = self._known_not_minted_token_ids
+        chunk_size = log_scan_chunk_size(self.config.chain_id)
 
-        known_not_minted = getattr(self, "_known_not_minted_token_ids", None)
-        if known_not_minted is None:
-            known_not_minted = set()
-            self._known_not_minted_token_ids = known_not_minted
-
+        # Transfer events are scanned newest-first in bounded windows so a single
+        # eth_getLogs response can never balloon the process. Currently-held NFTs
+        # surface at their acquisition block, so the scan terminates once every
+        # expected position is found — usually within the first chunk or two.
         owned: list[int] = []
-        for token_id in sorted(candidate_ids):
-            if token_id in known_not_minted:
-                continue
+        checked: set[int] = set()
+        for start, end in iter_block_chunks(0, latest_block, chunk_size, descending=True):
             try:
-                current_owner = self._position_manager_contract.functions.ownerOf(token_id).call()
+                logs = self._w3.eth.get_logs({
+                    "address": pm_address,
+                    "fromBlock": start,
+                    "toBlock": end,
+                    "topics": [_TRANSFER_EVENT_TOPIC, None, owner_topic],
+                }) + self._w3.eth.get_logs({
+                    "address": pm_address,
+                    "fromBlock": start,
+                    "toBlock": end,
+                    "topics": [_TRANSFER_EVENT_TOPIC, owner_topic],
+                })
             except Exception as e:
-                if _is_not_minted_error(e):
-                    known_not_minted.add(token_id)
+                logger.warning("get_owned_positions_logs_failed", venue=self.name, error=str(e))
+                return owned
+
+            candidate_ids = {
+                int(log["topics"][3].hex(), 16)
+                for log in logs
+                if len(log["topics"]) > 3
+            }
+            for token_id in sorted(candidate_ids):
+                if token_id in checked or token_id in known_not_minted:
                     continue
-                logger.warning(
-                    "position_owner_lookup_failed",
-                    venue=self.name,
-                    token_id=token_id,
-                    error=str(e),
-                )
-                continue
-            if Web3.to_checksum_address(current_owner) == owner:
-                owned.append(token_id)
+                checked.add(token_id)
+                try:
+                    current_owner = self._position_manager_contract.functions.ownerOf(token_id).call()
+                except Exception as e:
+                    if _is_not_minted_error(e):
+                        known_not_minted.add(token_id)
+                        continue
+                    logger.warning(
+                        "position_owner_lookup_failed",
+                        venue=self.name,
+                        token_id=token_id,
+                        error=str(e),
+                    )
+                    continue
+                if Web3.to_checksum_address(current_owner) == owner:
+                    owned.append(token_id)
+
+            if expected_balance is not None and len(owned) >= expected_balance:
+                break
 
         if expected_balance is not None and len(owned) != expected_balance:
             logger.warning(

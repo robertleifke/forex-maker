@@ -416,6 +416,7 @@ class TestActiveLpPositionSnapshot:
             for token_id in token_ids
         ]
         w3 = MagicMock()
+        w3.eth.block_number = 100
         w3.eth.get_logs.side_effect = [log_entries, []]
 
         adapter = SimpleNamespace(
@@ -423,6 +424,8 @@ class TestActiveLpPositionSnapshot:
             _position_manager_contract=position_manager_contract,
             _lp_account=SimpleNamespace(address=owner),
             _w3=w3,
+            config=SimpleNamespace(chain_id=8453),
+            _known_not_minted_token_ids=set(),
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
@@ -461,6 +464,7 @@ class TestActiveLpPositionSnapshot:
             {"topics": [b"", b"", b"", valid_token_id.to_bytes(32, "big")]},
         ]
         w3 = MagicMock()
+        w3.eth.block_number = 100
         w3.eth.get_logs.side_effect = [log_entries, [], log_entries, []]
 
         adapter = SimpleNamespace(
@@ -468,6 +472,8 @@ class TestActiveLpPositionSnapshot:
             _position_manager_contract=position_manager_contract,
             _lp_account=SimpleNamespace(address=owner),
             _w3=w3,
+            config=SimpleNamespace(chain_id=8453),
+            _known_not_minted_token_ids=set(),
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,

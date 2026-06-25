@@ -16,8 +16,11 @@ from types import SimpleNamespace
 
 from hexbytes import HexBytes
 
+import pytest
+
 from engine.market.dex_volume import V4_SWAP_TOPIC, event_id_from_log
 from engine.venues.dex.v4 import BaseV4DexAdapter
+from engine.web3_utils import iter_block_chunks, log_scan_chunk_size
 
 
 def _word(value: int) -> bytes:
@@ -110,3 +113,44 @@ def test_event_id_stable_across_log_shapes():
 
     assert id_from_hexbytes is not None
     assert id_from_hexbytes == id_from_hexstr
+
+
+# =============================================================================
+# iter_block_chunks: bounded log-scan windows that fully cover the range
+# =============================================================================
+#
+# eth_getLogs over fromBlock 0 -> latest pulls an unbounded response into one
+# Python list and has OOM-ed the host. iter_block_chunks must split the range so
+# each request stays bounded while still covering every block exactly once.
+
+
+def test_iter_block_chunks_ascending_covers_range_without_gaps():
+    chunks = list(iter_block_chunks(0, 12, 5))
+    assert chunks == [(0, 4), (5, 9), (10, 12)]
+    # contiguous, no gaps or overlaps, every block covered once
+    assert chunks[0][0] == 0 and chunks[-1][1] == 12
+    for (_, prev_end), (next_start, _) in zip(chunks, chunks[1:]):
+        assert next_start == prev_end + 1
+
+
+def test_iter_block_chunks_descending_yields_newest_first():
+    chunks = list(iter_block_chunks(0, 12, 5, descending=True))
+    assert chunks == [(8, 12), (3, 7), (0, 2)]
+    assert chunks[0][1] == 12 and chunks[-1][0] == 0
+
+
+def test_iter_block_chunks_exact_and_empty_ranges():
+    assert list(iter_block_chunks(100, 100, 50)) == [(100, 100)]
+    assert list(iter_block_chunks(0, 9, 5)) == [(0, 4), (5, 9)]  # exact multiple
+    assert list(iter_block_chunks(10, 5, 50)) == []  # from > to
+
+
+def test_iter_block_chunks_rejects_nonpositive_chunk():
+    with pytest.raises(ValueError):
+        list(iter_block_chunks(0, 10, 0))
+
+
+def test_log_scan_chunk_size_is_chain_aware():
+    assert log_scan_chunk_size(56) == 5_000  # BSC mainnet
+    assert log_scan_chunk_size(97) == 5_000  # BSC testnet
+    assert log_scan_chunk_size(8453) == 50_000  # Base

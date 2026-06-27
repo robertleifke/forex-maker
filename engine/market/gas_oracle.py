@@ -58,8 +58,10 @@ async def _fetch_gas_price_gwei(label: str, rpc_url: str) -> Decimal:
         wei = await w3.eth.gas_price
         return Decimal(wei) / Decimal(10**9)
     except Exception as e:
-        logger.error("gas_oracle_fetch_call_failed", call=label, error_type=type(e).__name__, error=repr(e))
-        raise RuntimeError(f"{label}: {type(e).__name__}: {e!r}") from e
+        # Redact the RPC URL (may contain API key) from error output.
+        safe_err = repr(e).replace(rpc_url, "<rpc>")
+        logger.error("gas_oracle_fetch_call_failed", call=label, error_type=type(e).__name__, error=safe_err)
+        raise RuntimeError(f"{label}: {type(e).__name__}: {safe_err}") from e
 
 
 async def _fetch_native_prices(alchemy_key: str) -> tuple[Decimal, Decimal]:
@@ -71,8 +73,10 @@ async def _fetch_native_prices(alchemy_key: str) -> tuple[Decimal, Decimal]:
             prices = {item["symbol"]: Decimal(item["prices"][0]["value"]) for item in resp.json()["data"]}
             return prices["ETH"], prices["BNB"]
     except Exception as e:
-        logger.error("gas_oracle_fetch_call_failed", call="native_prices", error_type=type(e).__name__, error=repr(e))
-        raise RuntimeError(f"native_prices: {type(e).__name__}: {e!r}") from e
+        # Redact the API key from the URL before logging or re-raising.
+        safe_err = repr(e).replace(alchemy_key, "***")
+        logger.error("gas_oracle_fetch_call_failed", call="native_prices", error_type=type(e).__name__, error=safe_err)
+        raise RuntimeError(f"native_prices: {type(e).__name__}: {safe_err}") from e
 
 
 async def update() -> None:

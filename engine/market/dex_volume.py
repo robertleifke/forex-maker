@@ -230,9 +230,7 @@ def _make_async_w3(config: V4PoolReadConfig, rpc_url: str) -> AsyncWeb3:
 
 
 def _log_chunk_size(config: V4PoolReadConfig) -> int:
-    if config.chain_id_str == "bsc":
-        return 5_000
-    return 50_000
+    return 2_000
 
 
 def event_id_from_log(log: Mapping[str, Any] | LogReceipt) -> str | None:

@@ -60,11 +60,17 @@ class ArbitrageJobs:
             )
         return subscriptions
 
+    _BOOTSTRAP_RETRY_INTERVAL = 60.0
+
     def schedule_dex_bootstrap(self) -> None:
+        import time
         if not self.context.arbitrage_engine or not self.state.dex_bootstrap_pending:
             return
         if self.state.dex_bootstrap_task and not self.state.dex_bootstrap_task.done():
             return
+        if time.monotonic() - self.state.dex_bootstrap_last_attempt < self._BOOTSTRAP_RETRY_INTERVAL:
+            return
+        self.state.dex_bootstrap_last_attempt = time.monotonic()
         self.state.dex_bootstrap_task = asyncio.create_task(self.bootstrap_dex_arb_curve())
 
     async def bootstrap_dex_arb_curve(self) -> None:

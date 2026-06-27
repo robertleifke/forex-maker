@@ -46,6 +46,7 @@ UNISWAP_BASE_EXECUTION_CONFIG = V4ExecutionConfig(
     invert_price=False,
     cngn_is_token0=True,
     position_manager=_BASE_POSITION_MANAGER,
+    position_manager_deploy_block=40_000_000,
 )
 
 

@@ -45,6 +45,7 @@ UNISWAP_BSC_EXECUTION_CONFIG = V4ExecutionConfig(
     hooks="0x0000000000000000000000000000000000000000",
     invert_price=True,
     position_manager=_BSC_POSITION_MANAGER,
+    position_manager_deploy_block=101_000_000,
 )
 
 

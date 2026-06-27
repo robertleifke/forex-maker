@@ -16,4 +16,5 @@ class SchedulerState:
     quidax_depth_ok: bool = True
     dex_bootstrap_pending: bool = False
     dex_bootstrap_task: asyncio.Task[None] | None = None
+    dex_bootstrap_last_attempt: float = 0.0
     last_balances: list[Any] | None = None

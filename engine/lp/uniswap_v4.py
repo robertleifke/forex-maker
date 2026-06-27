@@ -340,15 +340,16 @@ class V4PositionManager:
         owner_topic = "0x" + owner[2:].lower().rjust(64, "0")
 
         try:
+            from_block = getattr(self.config, "position_manager_deploy_block", 0)
             incoming = self._w3.eth.get_logs({
                 "address": self._position_manager_contract.address,
-                "fromBlock": 0,
+                "fromBlock": from_block,
                 "toBlock": "latest",
                 "topics": [_TRANSFER_EVENT_TOPIC, None, owner_topic],
             })
             outgoing = self._w3.eth.get_logs({
                 "address": self._position_manager_contract.address,
-                "fromBlock": 0,
+                "fromBlock": from_block,
                 "toBlock": "latest",
                 "topics": [_TRANSFER_EVENT_TOPIC, owner_topic],
             })

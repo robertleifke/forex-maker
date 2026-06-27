@@ -132,6 +132,7 @@ class V4ExecutionConfig:
     invert_price: bool = False
     cngn_is_token0: bool = False
     position_manager: str = ""
+    position_manager_deploy_block: int = 0
 
     def resolve_pool_key(self) -> tuple[str, str, int, int, str]:
         """Build the canonical pool key tuple from config fields.

@@ -194,7 +194,7 @@ class LPVenueProtocol(Protocol):
     params: DexParams
     config: "V4ExecutionConfig"
 
-    def get_owned_positions(self, known_token_ids: list[int] | None = None) -> list[int]: ...
+    def get_owned_positions(self) -> list[int]: ...
     def get_position_state(self, token_id: int) -> "PositionState | None": ...
     def calculate_mint_amounts(self) -> tuple[int, int]: ...
 
@@ -259,7 +259,7 @@ class V4PositionManager:
         self._pool_key: tuple[str, str, int, int, str] | None = None
         self._token_index_lookup_supported: bool | None = None
         self._known_not_minted_token_ids: set[int] = set()
-        self._owned_token_ids: list[int] | None = None
+        self._owned_token_ids: list[int] = []
 
     # === Pool key ===
 
@@ -270,65 +270,22 @@ class V4PositionManager:
 
     # === Position queries ===
 
-    def prime_owned_token_ids(self, token_ids: list[int]) -> None:
-        """Seed the in-memory ownership cache from persisted DB IDs so the first
-        position read after startup costs a single balanceOf rather than a log scan."""
+    def set_owned_token_ids(self, token_ids: list[int]) -> None:
+        """Seed the authoritative ownership record from the DB at startup."""
         self._owned_token_ids = list(token_ids)
 
-    def get_owned_positions(self, known_token_ids: list[int] | None = None) -> list[int]:
-        """Get all position token IDs owned by LP wallet via ERC721 on PositionManager.
+    def get_owned_positions(self) -> list[int]:
+        """Currently owned LP NFT token IDs, from the in-memory record — zero RPC."""
+        return list(self._owned_token_ids)
 
-        Steady state is a single balanceOf call: when the on-chain NFT count matches
-        the cached set, the cache is returned untouched. A caller hint (DB-persisted
-        IDs) or the cache is verified with ownerOf; only a genuine ownership change
-        falls through to full discovery (enumeration or a one-off log scan).
-        """
+    def discover_owned_positions_onchain(self) -> list[int]:
+        """One-time on-chain discovery for the startup seeder when the DB is empty."""
         if not self._position_manager_contract:
             return []
         pm = self._position_manager_contract
-        try:
-            balance = pm.functions.balanceOf(self._lp_account.address).call()
-            if balance == 0:
-                self._owned_token_ids = []
-                return []
-
-            if self._owned_token_ids is not None and len(self._owned_token_ids) == balance:
-                return list(self._owned_token_ids)
-
-            hint = known_token_ids or self._owned_token_ids
-            if hint:
-                lp = Web3.to_checksum_address(self._lp_account.address)
-                owned = []
-                for token_id in hint:
-                    try:
-                        owner = pm.functions.ownerOf(token_id).call()
-                    except Exception:
-                        continue
-                    if Web3.to_checksum_address(owner) == lp:
-                        owned.append(token_id)
-                if len(owned) == balance:
-                    self._owned_token_ids = owned
-                    return list(owned)
-                logger.warning(
-                    "lp_token_ids_mismatch_rediscovering",
-                    venue=self.name,
-                    hint_ids=list(hint),
-                    on_chain_balance=balance,
-                )
-
-            discovered = self._discover_owned_positions(balance)
-            self._owned_token_ids = discovered
-            return list(discovered)
-        except Exception as e:
-            logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
+        balance = pm.functions.balanceOf(self._lp_account.address).call()
+        if balance == 0:
             return []
-
-    def _discover_owned_positions(self, balance: int) -> list[int]:
-        """Discover owned token IDs with no cache/hint, via enumeration when the
-        PositionManager supports it, otherwise a Transfer-log scan."""
-        if not self._position_manager_contract:
-            return []
-        pm = self._position_manager_contract
         if self._token_index_lookup_supported is not False:
             try:
                 owned = [
@@ -979,7 +936,10 @@ class V4PositionManager:
             reserve0=reserve0,
             reserve1=reserve1,
         )
-        return await self._tx._send_transaction(tx, self._lp_account, parse_token_id=True)
+        result = await self._tx._send_transaction(tx, self._lp_account, parse_token_id=True)
+        if result.status == "confirmed" and result.token_id is not None:
+            self._owned_token_ids.append(result.token_id)
+        return result
 
     async def increase_liquidity(
         self,
@@ -1128,7 +1088,10 @@ class V4PositionManager:
             burn_only=metadata.liquidity == 0,
             recipient=to_addr,
         )
-        return await self._tx._send_transaction(tx, self._lp_account)
+        result = await self._tx._send_transaction(tx, self._lp_account)
+        if result.status == "confirmed":
+            self._owned_token_ids = [t for t in self._owned_token_ids if t != token_id]
+        return result
 
     async def prepare_lp_balance(
         self, tick_lower: int, tick_upper: int

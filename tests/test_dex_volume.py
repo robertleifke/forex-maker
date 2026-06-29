@@ -216,11 +216,16 @@ class _SyncConfig:
     chain_id_str = "base"
 
 
-def test_sync_gap_fills_seeded_pool_instead_of_full_rescan(monkeypatch, tmp_path):
-    # A seeded pool keeps its volume live via inline event recording, so a
-    # reconnect must gap-fill from the store mtime — never re-scan the full 24h.
+class _BscConfig:
+    pool_address = "bsc_pool"
+    rpc_url = "rpc1"
+    chain_id_str = "bsc"
+
+
+def test_sync_gap_fills_seeded_pool_from_its_own_last_swap(monkeypatch, tmp_path):
     store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
-    store.record("pool", Decimal("25"), event_id="tx1:0", allow_unseeded=True)
+    last_ms = int(time.time() * 1000) - 5_000
+    store.record("pool", Decimal("25"), timestamp_ms=last_ms, event_id="tx1:0", allow_unseeded=True)
     store.mark_seeded("pool")
     monkeypatch.setattr(dex_volume, "_STORE", store)
 
@@ -233,13 +238,34 @@ def test_sync_gap_fills_seeded_pool_instead_of_full_rescan(monkeypatch, tmp_path
 
     asyncio.run(dex_volume.sync_pool_volume_24h(_SyncConfig()))
 
-    assert captured["gap_from_ts"] is not None
-    assert captured["gap_from_ts"] == pytest.approx(store.path.stat().st_mtime)
+    assert captured["gap_from_ts"] == pytest.approx(last_ms / 1000)
+
+
+def test_sync_gap_anchor_is_per_pool_not_global(monkeypatch, tmp_path):
+    store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
+    base_ms = int(time.time() * 1000) - 1_000
+    bsc_ms = int(time.time() * 1000) - 3_600_000
+    store.record("pool", Decimal("10"), timestamp_ms=base_ms, event_id="b:0", allow_unseeded=True)
+    store.record("bsc_pool", Decimal("10"), timestamp_ms=bsc_ms, event_id="s:0", allow_unseeded=True)
+    store.mark_seeded("pool")
+    store.mark_seeded("bsc_pool")
+    monkeypatch.setattr(dex_volume, "_STORE", store)
+
+    captured: dict[str, float | None] = {}
+
+    async def _capture(config, gap_from_ts=None):
+        captured[config.pool_address] = gap_from_ts
+
+    monkeypatch.setattr(dex_volume, "_refresh_pool", _capture)
+
+    asyncio.run(dex_volume.sync_pool_volume_24h(_SyncConfig()))
+    asyncio.run(dex_volume.sync_pool_volume_24h(_BscConfig()))
+
+    assert captured["pool"] == pytest.approx(base_ms / 1000)
+    assert captured["bsc_pool"] == pytest.approx(bsc_ms / 1000)
 
 
 def test_sync_full_scans_unseeded_pool(monkeypatch, tmp_path):
-    # An unseeded pool has no trustworthy window yet, so the gap anchor is None
-    # and _refresh_pool performs a full backfill.
     store = RollingDexVolumeStore(tmp_path / "dex_volume.json")
     monkeypatch.setattr(dex_volume, "_STORE", store)
 

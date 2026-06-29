@@ -25,7 +25,7 @@ This keeps on-chain history clean and prevents arb execution from accidentally d
 
 V4 pools do not emit a convenient `PositionUpdated` event. The engine reconstructs position state from first principles:
 
-1. **Find the LP NFT**: the `tokenId`s owned by the LP address are persisted in the `lp_token_ids` DB table and primed into each position manager at startup. Routine reads cost a single `balanceOf` — when the on-chain NFT count is unchanged, the cached IDs are reused with no further calls. A `Transfer`-log scan from the PositionManager's deploy block runs only on first-ever discovery or a genuine ownership change.
+1. **Find the LP NFT**: the `lp_token_ids` DB table is the durable source of truth for the `tokenId`s owned by the LP address. It is seeded into each position manager at startup and is the authoritative runtime record — mutated only by the manager's own confirmed mint/remove (a rerange removes the old id and adds the new one). Routine reads return this record with **zero RPC**; the chain is never re-queried to reconcile. A `Transfer`-log scan from the PositionManager's deploy block runs only once, for first-ever discovery when the DB has no record yet.
 2. **Decode PositionInfo**: call `PositionManager.getPositionInfo(tokenId)` which returns a packed `bytes32`. `tickLower` is at bits 8–31, `tickUpper` at bits 32–55.
 3. **Get liquidity**: call `StateView.getPositionLiquidity(poolId, ..., tickLower, tickUpper)`.
 4. **Compute amounts**: use exact tick math to convert our position's liquidity + current sqrtPriceX96 → token amounts. See below.

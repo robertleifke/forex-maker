@@ -73,7 +73,7 @@ class FakeDexAdapter:
         self.cngn_token = _DummyContract()
         self.trade_account = SimpleNamespace(address="0xFAKEDEX00000000000000000000000000000001")
 
-    def get_owned_positions(self, known_token_ids: "list[int] | None" = None) -> list[int]:
+    def get_owned_positions(self) -> list[int]:
         return [p.token_id for p in self._positions]
 
     def get_position_state(self, token_id: int) -> "PositionState | None":

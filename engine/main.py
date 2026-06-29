@@ -207,42 +207,33 @@ def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
     return lp_managers
 
 
-async def _reconcile_lp_token_ids(db: Any, lp_managers: dict[str, Any]) -> None:
-    """Verify persisted LP token IDs and prime each manager's ownership cache.
+async def _load_lp_token_ids(db: Any, lp_managers: dict[str, Any]) -> None:
+    """Prime LP token ID caches from DB, discovering on-chain only when empty.
 
-    Subsequent startups verify DB IDs once, then managers keep an in-memory cache
-    current through confirmed mint/remove events.
+    Once seeded, confirmed mint/remove events keep the DB and in-memory cache current.
     """
     for venue_name, manager in lp_managers.items():
         existing = await db.positions.get_lp_token_ids(venue_name)
+        if existing:
+            manager.set_owned_token_ids(existing)
+            logger.info("lp_token_ids_loaded_from_db", venue=venue_name, token_ids=existing)
+            continue
         try:
             loop = asyncio.get_event_loop()
             token_ids = await loop.run_in_executor(
                 None,
-                lambda: manager.verify_owned_positions(known_token_ids=existing or None),
+                lambda: manager.verify_owned_positions(),
             )
-            for token_id in set(existing) - set(token_ids):
-                await db.positions.remove_lp_token_id(venue_name, token_id)
-            for token_id in set(token_ids) - set(existing):
+            for token_id in token_ids:
                 await db.positions.save_lp_token_id(venue_name, token_id)
             manager.set_owned_token_ids(token_ids)
             logger.info(
                 "lp_token_ids_seeded",
                 venue=venue_name,
-                db_ids=existing,
                 token_ids=token_ids,
             )
         except Exception as exc:
-            if existing:
-                manager.set_owned_token_ids(existing)
-                logger.warning(
-                    "lp_token_ids_reconcile_failed_using_db_cache",
-                    venue=venue_name,
-                    token_ids=existing,
-                    error=str(exc),
-                )
-                continue
-            logger.warning("lp_token_ids_reconcile_failed", venue=venue_name, error=str(exc))
+            logger.warning("lp_token_ids_seed_failed", venue=venue_name, error=str(exc))
 
 
 @asynccontextmanager
@@ -279,7 +270,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     lp_managers = init_lp_managers(venues)
     await restore_venue_params(db, venues, lp_managers)
-    await _reconcile_lp_token_ids(db, lp_managers)
+    await _load_lp_token_ids(db, lp_managers)
 
     from engine.market.dex_volume import seed_dex_volume_24h
     from engine.market.pool_state import seed_pool_states

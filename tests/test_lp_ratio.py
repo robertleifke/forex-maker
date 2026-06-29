@@ -427,6 +427,7 @@ class TestActiveLpPositionSnapshot:
             config=SimpleNamespace(chain_id=8453),
             _known_not_minted_token_ids=set(),
             _owned_token_ids=None,
+            _token_index_lookup_supported=None,
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
@@ -476,6 +477,7 @@ class TestActiveLpPositionSnapshot:
             config=SimpleNamespace(chain_id=8453),
             _known_not_minted_token_ids=set(),
             _owned_token_ids=None,
+            _token_index_lookup_supported=None,
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
@@ -525,6 +527,52 @@ class TestActiveLpPositionSnapshot:
         assert cached == [current_token_id]
         position_manager_contract.functions.ownerOf.assert_called_once_with(stale_token_id)
         position_manager_contract.functions.tokenOfOwnerByIndex.assert_called_once_with(owner, 0)
+
+    def test_verify_owned_positions_reconciles_burned_db_token_id(self):
+        owner = "0x" + "cc" * 20
+        burned_token_id = 101
+        current_token_id = 202
+
+        position_manager_contract = MagicMock()
+        position_manager_contract.address = "0x" + "dd" * 20
+        position_manager_contract.functions.balanceOf.return_value.call.return_value = 1
+        position_manager_contract.functions.tokenOfOwnerByIndex.return_value.call.return_value = current_token_id
+
+        def owner_of_side_effect(token_id: int):
+            call = MagicMock()
+            if token_id == burned_token_id:
+                call.call.side_effect = Exception("execution reverted: NOT_MINTED")
+            else:
+                call.call.return_value = owner
+            return call
+
+        position_manager_contract.functions.ownerOf.side_effect = owner_of_side_effect
+
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            _lp_account=SimpleNamespace(address=owner),
+            _w3=MagicMock(),
+            config=SimpleNamespace(chain_id=8453),
+            _known_not_minted_token_ids=set(),
+            _token_index_lookup_supported=None,
+            _owned_token_ids=None,
+        )
+        adapter._get_owned_positions_from_logs = MethodType(
+            V4PositionManager._get_owned_positions_from_logs,
+            adapter,
+        )
+
+        owned = V4PositionManager.verify_owned_positions(
+            adapter,
+            known_token_ids=[burned_token_id, current_token_id],
+        )
+
+        assert owned == [current_token_id]
+        assert adapter._owned_token_ids == [current_token_id]
+        assert position_manager_contract.functions.ownerOf.call_args_list[0].args == (burned_token_id,)
+        assert position_manager_contract.functions.ownerOf.call_args_list[1].args == (current_token_id,)
+        position_manager_contract.functions.tokenOfOwnerByIndex.assert_not_called()
 
     def test_static_position_metadata_uses_position_manager_liquidity_by_token_id(self):
         token_id = 77
@@ -867,8 +915,8 @@ class TestV4GetPosition:
 
 
 @pytest.mark.asyncio
-async def test_lp_token_reconcile_preserves_db_ids_on_discovery_failure():
-    from engine.main import _reconcile_lp_token_ids
+async def test_lp_token_load_uses_existing_db_ids_without_rpc():
+    from engine.main import _load_lp_token_ids
 
     class _Positions:
         def __init__(self) -> None:
@@ -893,10 +941,11 @@ async def test_lp_token_reconcile_preserves_db_ids_on_discovery_failure():
         set_owned_token_ids=MagicMock(),
     )
 
-    await _reconcile_lp_token_ids(db, {"uni-base": manager})
+    await _load_lp_token_ids(db, {"uni-base": manager})
 
     assert positions.ids == [77]
     assert positions.removed == []
+    manager.verify_owned_positions.assert_not_called()
     manager.set_owned_token_ids.assert_called_once_with([77])
 
 

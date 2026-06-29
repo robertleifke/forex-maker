@@ -76,7 +76,8 @@ class LPRebalancer:
 
     async def _check_and_rebalance_locked(self, venue: LPVenueProtocol) -> None:
         """Check position state; rebalance if out of range past threshold."""
-        token_ids = venue.get_owned_positions()
+        known_ids = await self._position_store.get_lp_token_ids(venue.name) if self._position_store else None
+        token_ids = venue.get_owned_positions(known_token_ids=known_ids or None)
         if len(token_ids) > 1:
             incident_key = self._multi_position_incident_key(venue.name, token_ids)
             message = (
@@ -496,7 +497,8 @@ class LPRebalancer:
         """Remove all positions for a venue under the shared LP lifecycle lock."""
         async with self._get_venue_lock(venue.name):
             results: list[dict[str, Any]] = []
-            for token_id in venue.get_owned_positions():
+            known_ids = await self._position_store.get_lp_token_ids(venue.name) if self._position_store else None
+            for token_id in venue.get_owned_positions(known_token_ids=known_ids or None):
                 result = await venue.remove_position(token_id, recipient=recipient)
                 if result.status == "confirmed" and self._position_store is not None:
                     await self._position_store.remove_lp_token_id(venue.name, token_id)

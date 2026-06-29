@@ -186,14 +186,6 @@ class RollingDexVolumeStore:
         self._evict(pool)
         return self._state(pool).total_usd
 
-    def last_swap_ts_ms(self, pool: str) -> int | None:
-        """Newest recorded swap timestamp (ms) for this pool, or None — the per-pool resume mark."""
-        self.load()
-        swaps = self._state(pool).swaps
-        if not swaps:
-            return None
-        return max(ts_ms for ts_ms, _, _ in swaps)
-
     def _state(self, pool: str) -> _PoolVolumeState:
         return self._pools.setdefault(pool, _PoolVolumeState())
 
@@ -270,7 +262,11 @@ def _estimate_block_for_timestamp(
 def _interpolate_block_ts_ms(
     block_number: int, latest_number: int, latest_ts: int, blocks_per_day: int
 ) -> int:
-    """Approximate a block's timestamp from average block time (avoids a per-block fetch)."""
+    """Approximate a block's timestamp from the chain's average block time.
+
+    The volume window only needs timestamps accurate enough for the 24h rolling
+    cutoff, so we interpolate from the latest block rather than fetching each block.
+    """
     seconds_per_block = 86400 / blocks_per_day
     est_ts = latest_ts - (latest_number - block_number) * seconds_per_block
     return int(est_ts * 1000)
@@ -350,16 +346,12 @@ async def _refresh_pool(config: V4PoolReadConfig, gap_from_ts: float | None = No
         raise last_error
 
 
-def _resume_ts_for(pool: str) -> float | None:
-    """Per-pool gap-fill anchor (unix seconds), or None for a full 24h backfill."""
-    if not _STORE.is_seeded(pool):
-        return None
-    last_ms = _STORE.last_swap_ts_ms(pool)
-    return None if last_ms is None else last_ms / 1000
-
-
 async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> None:
-    """Restore and backfill rolling 24h volume; each pool resumes from its own last swap."""
+    """Restore and backfill rolling 24h volume for tracked DEX pools.
+
+    On restart, only scans the gap since the file was last saved — not the full 24h.
+    First-ever startup (no file) scans the full 24h window.
+    """
     if configs is None:
         from engine.venues.dex.uniswap_bsc import UNISWAP_BSC_POOL_READ_CONFIG
         from engine.venues.dex.uniswap_base import UNISWAP_BASE_POOL_READ_CONFIG
@@ -368,18 +360,32 @@ async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> 
 
     _STORE.load()
 
+    # Use file mtime as the gap start — we already have data up to that point
+    gap_from_ts: float | None = None
+    if _STORE.path.exists():
+        gap_from_ts = _STORE.path.stat().st_mtime
+
     for config in configs:
         try:
-            await _refresh_pool(config, gap_from_ts=_resume_ts_for(config.pool_address))
+            pool_gap = gap_from_ts if _STORE.is_seeded(config.pool_address) else None
+            await _refresh_pool(config, gap_from_ts=pool_gap)
         except Exception as exc:
             logger.warning("dex_volume_backfill_failed", pool=config.pool_address, error=str(exc))
 
 
 async def sync_pool_volume_24h(config: V4PoolReadConfig) -> None:
-    """Refresh one pool's rolling volume after a (re)connect — gap-fill, not a full rescan."""
+    """Refresh one pool's rolling volume window after a (re)connect.
+
+    Live swaps are recorded inline while the socket is up, so only the gap since
+    the last persisted swap needs filling — never a full 24h rescan. The gap start
+    is the store mtime (advanced on every save), matching the restart path.
+    """
     _STORE.load()
+    gap_from_ts: float | None = None
+    if _STORE.is_seeded(config.pool_address) and _STORE.path.exists():
+        gap_from_ts = _STORE.path.stat().st_mtime
     try:
-        await _refresh_pool(config, gap_from_ts=_resume_ts_for(config.pool_address))
+        await _refresh_pool(config, gap_from_ts=gap_from_ts)
     except Exception as exc:
         logger.warning("dex_volume_sync_failed", pool=config.pool_address, error=str(exc))
 

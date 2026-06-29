@@ -383,6 +383,9 @@ class BaseV4DexAdapter(VenueAdapter):
         if self._pool_key is not None:
             return self._pool_key
 
+        # The pool key (currencies, fee, tick_spacing, hooks) is required config.
+        # A missing field is a misconfiguration we fail loudly on — not something
+        # to reconstruct from a full-history Initialize log scan.
         self._pool_key = self.config.resolve_pool_key()
         logger.info(
             "v4_pool_key_resolved",

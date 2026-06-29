@@ -9,6 +9,7 @@ import pytest
 import engine.market.dex_volume as dex_volume
 from engine.market.dex_volume import (
     RollingDexVolumeStore,
+    _scan_pool_window_from_rpc,
     _refresh_pool,
     stable_volume_usd_from_v4_swap,
 )
@@ -257,7 +258,7 @@ def test_sync_gap_fills_seeded_pool_from_its_own_block_cursor(monkeypatch, tmp_p
 
     asyncio.run(dex_volume.sync_pool_volume_24h(_SyncConfig()))
 
-    assert captured["from_block"] == 501
+    assert captured["from_block"] == 500
 
 
 def test_sync_gap_anchor_is_per_pool_not_global(monkeypatch, tmp_path):
@@ -278,8 +279,8 @@ def test_sync_gap_anchor_is_per_pool_not_global(monkeypatch, tmp_path):
     asyncio.run(dex_volume.sync_pool_volume_24h(_SyncConfig()))
     asyncio.run(dex_volume.sync_pool_volume_24h(_BscConfig()))
 
-    assert captured["pool"] == 901
-    assert captured["bsc_pool"] == 301
+    assert captured["pool"] == 900
+    assert captured["bsc_pool"] == 300
 
 
 def test_seeded_quiet_pool_uses_cursor_instead_of_full_rescan(monkeypatch, tmp_path):
@@ -298,7 +299,7 @@ def test_seeded_quiet_pool_uses_cursor_instead_of_full_rescan(monkeypatch, tmp_p
     asyncio.run(dex_volume.sync_pool_volume_24h(_SyncConfig()))
 
     assert store.get_24h_volume_usd("pool") == Decimal("0")
-    assert captured["from_block"] == 778
+    assert captured["from_block"] == 777
 
 
 def test_sync_full_scans_unseeded_pool(monkeypatch, tmp_path):
@@ -315,3 +316,35 @@ def test_sync_full_scans_unseeded_pool(monkeypatch, tmp_path):
     asyncio.run(dex_volume.sync_pool_volume_24h(_SyncConfig()))
 
     assert captured["from_block"] is None
+
+
+def test_resume_scan_clamps_stale_cursor_to_24h_window(monkeypatch):
+    captured: dict[str, int] = {}
+
+    class _Eth:
+        async def get_block(self, block_id):
+            assert block_id == "latest"
+            return {"number": 1_000_000, "timestamp": 1_700_000_000}
+
+        async def get_logs(self, params):
+            captured.setdefault("fromBlock", params["fromBlock"])
+            captured.setdefault("toBlock", params["toBlock"])
+            return []
+
+    class _Config:
+        chain_id_str = "base"
+        pool_manager = "0x" + "11" * 20
+        pool_address = "0x" + "22" * 32
+        token0_symbol = "cNGN"
+        token1_symbol = "USDC"
+        token0_decimals = 6
+        token1_decimals = 6
+
+    monkeypatch.setattr(dex_volume, "_make_async_w3", lambda config, rpc_url: type("W3", (), {"eth": _Eth()})())
+    monkeypatch.setattr(dex_volume.time, "time", lambda: 1_700_000_000)
+
+    state = asyncio.run(_scan_pool_window_from_rpc(_Config(), "rpc1", from_block=100))
+
+    assert captured["fromBlock"] == 956_800
+    assert captured["toBlock"] == 958_799
+    assert state.last_seen_block == 1_000_000

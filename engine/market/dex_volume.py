@@ -301,16 +301,16 @@ async def _scan_pool_window_from_rpc(
     state.last_seen_block = latest_number
 
     blocks_per_day = _BLOCKS_PER_DAY.get(config.chain_id_str, 43_200)
+    window_floor_block = _estimate_block_for_timestamp(
+        config,
+        time.time() - 86400,
+        latest_number,
+        latest_ts,
+    )
     if from_block is None:
-        start_block = _estimate_block_for_timestamp(
-            config,
-            time.time() - 86400,
-            latest_number,
-            latest_ts,
-        )
-        start_block = max(0, start_block - min(300, blocks_per_day // 100))
+        start_block = max(0, window_floor_block - min(300, blocks_per_day // 100))
     else:
-        start_block = max(0, int(from_block))
+        start_block = max(0, int(from_block), window_floor_block)
     if start_block > latest_number:
         return state
 
@@ -348,7 +348,7 @@ async def _refresh_pool(config: V4PoolReadConfig, from_block: int | None = None)
         try:
             state = await _scan_pool_window_from_rpc(config, rpc_url, from_block)
             if was_seeded and from_block is not None:
-                # Gap fill: merge only new swaps since this pool's block cursor.
+                # Gap fill overlaps the cursor block; event IDs dedupe already-seen swaps.
                 for entry in state.swaps:
                     _STORE.record(
                         config.pool_address,
@@ -376,7 +376,7 @@ def _resume_block_for(pool: str) -> int | None:
     last_seen_block = _STORE.last_seen_block(pool)
     if not _STORE.is_seeded(pool) or last_seen_block is None:
         return None
-    return max(0, last_seen_block + 1)
+    return max(0, last_seen_block)
 
 
 async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> None:

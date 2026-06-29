@@ -426,6 +426,7 @@ class TestActiveLpPositionSnapshot:
             _w3=w3,
             config=SimpleNamespace(chain_id=8453),
             _known_not_minted_token_ids=set(),
+            _owned_token_ids=None,
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
@@ -474,6 +475,7 @@ class TestActiveLpPositionSnapshot:
             _w3=w3,
             config=SimpleNamespace(chain_id=8453),
             _known_not_minted_token_ids=set(),
+            _owned_token_ids=None,
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
@@ -509,6 +511,7 @@ class TestActiveLpPositionSnapshot:
             config=SimpleNamespace(chain_id=8453),
             _known_not_minted_token_ids=set(),
             _token_index_lookup_supported=None,
+            _owned_token_ids=None,
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
@@ -831,6 +834,7 @@ class TestActiveLpPositionSnapshot:
                 _get_tx_params=lambda account: {"from": account.address},
                 _send_transaction=AsyncMock(return_value=TxResult(hash="0xremove", status="confirmed")),
             ),
+            _owned_token_ids=None,
         )
         adapter._w3.eth.get_block.return_value = {"timestamp": 100}
         adapter._w3.eth.estimate_gas.return_value = 100_000
@@ -860,6 +864,40 @@ class TestV4GetPosition:
         assert result.lp_position is not None
         assert result.lp_position.snapshot_status == "degraded"
         assert result.balances == {"cngn": Decimal("0"), "usdt": Decimal("0"), "usdc": Decimal("0")}
+
+
+@pytest.mark.asyncio
+async def test_lp_token_reconcile_preserves_db_ids_on_discovery_failure():
+    from engine.main import _reconcile_lp_token_ids
+
+    class _Positions:
+        def __init__(self) -> None:
+            self.ids = [77]
+            self.removed: list[int] = []
+
+        async def get_lp_token_ids(self, venue: str) -> list[int]:
+            return list(self.ids)
+
+        async def remove_lp_token_id(self, venue: str, token_id: int) -> None:
+            self.removed.append(token_id)
+            self.ids.remove(token_id)
+
+        async def save_lp_token_id(self, venue: str, token_id: int) -> None:
+            if token_id not in self.ids:
+                self.ids.append(token_id)
+
+    positions = _Positions()
+    db = SimpleNamespace(positions=positions)
+    manager = SimpleNamespace(
+        verify_owned_positions=MagicMock(side_effect=RuntimeError("alchemy unhappy")),
+        set_owned_token_ids=MagicMock(),
+    )
+
+    await _reconcile_lp_token_ids(db, {"uni-base": manager})
+
+    assert positions.ids == [77]
+    assert positions.removed == []
+    manager.set_owned_token_ids.assert_called_once_with([77])
 
 
 # =============================================================================

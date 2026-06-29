@@ -279,19 +279,12 @@ class V4PositionManager:
         self._owned_token_ids = None
 
     def get_owned_positions(self) -> list[int]:
-        """Owned LP NFT token IDs from the verified in-memory cache.
-
-        The cache is seeded at startup and kept current by confirmed mint/remove, so
-        routine reads are zero-RPC. A cache miss falls back to on-chain discovery.
-        """
         if self._owned_token_ids is not None:
             return list(self._owned_token_ids)
 
         try:
             return V4PositionManager._discover_owned_positions(self, strict=False)
         except Exception as e:
-            # Runtime reads fail open so transient RPC issues do not block UI/accounting.
-            # Startup uses verify_owned_positions(), which propagates infra failures.
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
 
@@ -307,12 +300,6 @@ class V4PositionManager:
         return int(self._position_manager_contract.functions.balanceOf(self._lp_account.address).call())
 
     def _discover_owned_positions(self, *, strict: bool) -> list[int]:
-        """Discover owned LP token IDs on-chain.
-
-        strict=True is for startup discovery: RPC errors propagate and a positive
-        balance with no discovered IDs is treated as unverified. Runtime reads use
-        strict=False and fail open in the public wrapper.
-        """
         if not self._position_manager_contract:
             return []
         pm = self._position_manager_contract

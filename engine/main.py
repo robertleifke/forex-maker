@@ -208,14 +208,7 @@ def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
 
 
 async def _load_lp_token_ids(db: Any, lp_managers: dict[str, Any]) -> None:
-    """Prime LP token ID caches from the DB and reconcile against chain at startup.
-
-    The DB is the durable source of truth, kept current by confirmed mint/remove. The
-    only way the two diverge is a crash between an on-chain confirm and its DB write,
-    so we reconcile once at boot — gated on a single balanceOf, with full discovery
-    only when the count drifts. Runtime reads then stay zero-RPC. An RPC failure here
-    never deletes persisted IDs: we fall back to the DB and retry next boot.
-    """
+    """Load DB token IDs, using one balanceOf to trigger on-chain reconciliation only on count drift."""
     loop = asyncio.get_event_loop()
     for venue_name, manager in lp_managers.items():
         existing = await db.positions.get_lp_token_ids(venue_name)

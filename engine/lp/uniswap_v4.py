@@ -259,6 +259,7 @@ class V4PositionManager:
         self._pool_key: tuple[str, str, int, int, str] | None = None
         self._token_index_lookup_supported: bool | None = None
         self._known_not_minted_token_ids: set[int] = set()
+        self._owned_token_ids: list[int] | None = None
 
     # === Pool key ===
 
@@ -269,32 +270,42 @@ class V4PositionManager:
 
     # === Position queries ===
 
+    def set_owned_token_ids(self, token_ids: list[int]) -> None:
+        """Seed the verified in-memory ownership cache from persisted DB IDs."""
+        self._owned_token_ids = list(token_ids)
+
     def get_owned_positions(self, known_token_ids: list[int] | None = None) -> list[int]:
         """Get all position token IDs owned by LP wallet via ERC721 on PositionManager.
 
-        If ``known_token_ids`` is supplied (loaded from DB by the caller), verify each
-        ID is still owned on-chain and return immediately — skipping the log scan entirely.
-        Falls back to the full log scan only when no DB hint is available.
+        DB hints are verified on-chain before being cached. After startup, routine
+        reads use the verified in-memory cache and confirmed mint/remove paths keep
+        it up to date without repeated ownerOf/log scans.
         """
+        cached_token_ids = getattr(self, "_owned_token_ids", None)
+        if cached_token_ids is not None and known_token_ids is None:
+            return list(cached_token_ids)
+
         if not self._position_manager_contract:
             return []
+        pm = self._position_manager_contract
         try:
-            balance = self._position_manager_contract.functions.balanceOf(
-                self._lp_account.address
-            ).call()
+            balance = pm.functions.balanceOf(self._lp_account.address).call()
             if balance == 0:
+                self._owned_token_ids = []
                 return []
 
             if known_token_ids:
+                lp = Web3.to_checksum_address(self._lp_account.address)
                 owned = []
                 for token_id in known_token_ids:
                     try:
-                        owner = self._position_manager_contract.functions.ownerOf(token_id).call()
-                        if Web3.to_checksum_address(owner) == Web3.to_checksum_address(self._lp_account.address):
+                        owner = pm.functions.ownerOf(token_id).call()
+                        if Web3.to_checksum_address(owner) == lp:
                             owned.append(token_id)
                     except Exception:
                         pass
                 if len(owned) == balance:
+                    self._owned_token_ids = owned
                     return owned
                 logger.warning(
                     "db_token_ids_mismatch_falling_back_to_log_scan",
@@ -303,20 +314,17 @@ class V4PositionManager:
                     on_chain_balance=balance,
                 )
 
-            token_index_lookup_supported = getattr(
-                self,
-                "_token_index_lookup_supported",
-                None,
-            )
+            token_index_lookup_supported = getattr(self, "_token_index_lookup_supported", None)
             if token_index_lookup_supported is not False:
                 try:
                     owned = [
-                        self._position_manager_contract.functions.tokenOfOwnerByIndex(
+                        pm.functions.tokenOfOwnerByIndex(
                             self._lp_account.address, i
                         ).call()
                         for i in range(balance)
                     ]
                     self._token_index_lookup_supported = True
+                    self._owned_token_ids = owned
                     return owned
                 except Exception as e:
                     if token_index_lookup_supported is None:
@@ -326,7 +334,9 @@ class V4PositionManager:
                             error=str(e),
                         )
                     self._token_index_lookup_supported = False
-            return self._get_owned_positions_from_logs(expected_balance=balance)
+            owned = self._get_owned_positions_from_logs(expected_balance=balance)
+            self._owned_token_ids = owned
+            return owned
         except Exception as e:
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
@@ -963,7 +973,13 @@ class V4PositionManager:
             reserve0=reserve0,
             reserve1=reserve1,
         )
-        return await self._tx._send_transaction(tx, self._lp_account, parse_token_id=True)
+        result = await self._tx._send_transaction(tx, self._lp_account, parse_token_id=True)
+        if result.status == "confirmed" and result.token_id is not None:
+            if self._owned_token_ids is None:
+                self._owned_token_ids = []
+            if result.token_id not in self._owned_token_ids:
+                self._owned_token_ids.append(result.token_id)
+        return result
 
     async def increase_liquidity(
         self,
@@ -1112,7 +1128,11 @@ class V4PositionManager:
             burn_only=metadata.liquidity == 0,
             recipient=to_addr,
         )
-        return await self._tx._send_transaction(tx, self._lp_account)
+        result = await self._tx._send_transaction(tx, self._lp_account)
+        cached_token_ids = getattr(self, "_owned_token_ids", None)
+        if result.status == "confirmed" and cached_token_ids is not None:
+            self._owned_token_ids = [t for t in cached_token_ids if t != token_id]
+        return result
 
     async def prepare_lp_balance(
         self, tick_lower: int, tick_upper: int

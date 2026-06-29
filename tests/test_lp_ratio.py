@@ -488,7 +488,40 @@ class TestActiveLpPositionSnapshot:
         assert getattr(adapter, "_token_index_lookup_supported") is False
         assert getattr(adapter, "_known_not_minted_token_ids") == {burned_token_id}
         assert position_manager_contract.functions.tokenOfOwnerByIndex.return_value.call.call_count == 1
-        assert owner_lookup_calls == [burned_token_id, valid_token_id, valid_token_id]
+        assert owner_lookup_calls == [burned_token_id, valid_token_id]
+
+    def test_stale_db_token_ids_fall_back_to_discovery_and_cache_result(self):
+        owner = "0x" + "cc" * 20
+        stale_token_id = 101
+        current_token_id = 202
+
+        position_manager_contract = MagicMock()
+        position_manager_contract.address = "0x" + "dd" * 20
+        position_manager_contract.functions.balanceOf.return_value.call.return_value = 1
+        position_manager_contract.functions.ownerOf.return_value.call.return_value = "0x" + "ee" * 20
+        position_manager_contract.functions.tokenOfOwnerByIndex.return_value.call.return_value = current_token_id
+
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            _lp_account=SimpleNamespace(address=owner),
+            _w3=MagicMock(),
+            config=SimpleNamespace(chain_id=8453),
+            _known_not_minted_token_ids=set(),
+            _token_index_lookup_supported=None,
+        )
+        adapter._get_owned_positions_from_logs = MethodType(
+            V4PositionManager._get_owned_positions_from_logs,
+            adapter,
+        )
+
+        owned = V4PositionManager.get_owned_positions(adapter, known_token_ids=[stale_token_id])
+        cached = V4PositionManager.get_owned_positions(adapter)
+
+        assert owned == [current_token_id]
+        assert cached == [current_token_id]
+        position_manager_contract.functions.ownerOf.assert_called_once_with(stale_token_id)
+        position_manager_contract.functions.tokenOfOwnerByIndex.assert_called_once_with(owner, 0)
 
     def test_static_position_metadata_uses_position_manager_liquidity_by_token_id(self):
         token_id = 77
@@ -638,10 +671,13 @@ class TestActiveLpPositionSnapshot:
             _w3=MagicMock(),
             _tx=SimpleNamespace(
                 _get_tx_params=lambda account: {"from": account.address},
-                _send_transaction=AsyncMock(return_value=TxResult(hash="0xmint", status="confirmed")),
+                _send_transaction=AsyncMock(
+                    return_value=TxResult(hash="0xmint", status="confirmed", token_id=77)
+                ),
             ),
             params=SimpleNamespace(max_slippage_percent=Decimal("1.0")),
             config=SimpleNamespace(pool_id="0x" + "ab" * 32, token0_decimals=6, token1_decimals=6),
+            _owned_token_ids=[],
         )
         adapter._w3.eth.get_block.return_value = {"timestamp": 100}
         adapter._w3.eth.estimate_gas.return_value = 100_000
@@ -661,6 +697,7 @@ class TestActiveLpPositionSnapshot:
         actions, params = decode(["bytes", "bytes[]"], unlock_data)
         assert actions == bytes([_V4_LP_MINT_POSITION, _V4_LP_SETTLE_PAIR])
         assert len(params) == 2
+        assert adapter._owned_token_ids == [77]
         mint_params = decode(
             ["(address,address,uint24,int24,address)", "int24", "int24", "uint256", "uint128", "uint128", "address", "bytes"],
             params[0],
@@ -751,6 +788,7 @@ class TestActiveLpPositionSnapshot:
                 _get_tx_params=lambda account: {"from": account.address},
                 _send_transaction=AsyncMock(return_value=TxResult(hash="0xremove", status="confirmed")),
             ),
+            _owned_token_ids=[token_id],
         )
         adapter._w3.eth.get_block.return_value = {"timestamp": 100}
         adapter._w3.eth.estimate_gas.return_value = 100_000
@@ -762,6 +800,7 @@ class TestActiveLpPositionSnapshot:
         actions, params = decode(["bytes", "bytes[]"], unlock_data)
         assert actions == bytes([_V4_LP_DECREASE_LIQUIDITY, _V4_LP_BURN_POSITION, _V4_LP_TAKE_PAIR])
         assert len(params) == 3
+        assert adapter._owned_token_ids == []
         assert deadline == 400
 
     @pytest.mark.asyncio

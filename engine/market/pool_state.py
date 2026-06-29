@@ -209,7 +209,15 @@ def handle_v4_swap_log(pool_config: V4PoolReadConfig, log: dict[str, Any]) -> No
         update_pool_state_from_event(pool_config.pool_address, sqrt_p, liquidity, tick, fee)
 
         from engine.market.dex_volume import event_id_from_log, record_live_v4_swap_volume
-        record_live_v4_swap_volume(pool_config, data_bytes, event_id=event_id_from_log(log))
+        block_number = log.get("blockNumber")
+        if isinstance(block_number, str):
+            block_number = int(block_number, 0)
+        record_live_v4_swap_volume(
+            pool_config,
+            data_bytes,
+            event_id=event_id_from_log(log),
+            block_number=int(block_number) if block_number is not None else None,
+        )
         logger.debug("v4_swap_state_updated", pool=pool_config.pool_address, tick=tick)
     except Exception as e:
         logger.error("v4_swap_event_parse_failed", error=str(e))

@@ -249,24 +249,27 @@ def event_id_from_log(log: Mapping[str, Any] | LogReceipt) -> str | None:
     return f"{tx_hash_str}:{log_index}"
 
 
-async def _block_timestamp_ms(w3: AsyncWeb3, block_number: int, cache: dict[int, int]) -> int:
-    if block_number not in cache:
-        block = await w3.eth.get_block(block_number)
-        cache[block_number] = int(block["timestamp"]) * 1000
-    return cache[block_number]
-
-
-async def _estimate_block_for_timestamp(
-    w3: AsyncWeb3, config: V4PoolReadConfig, target_ts: float
+def _estimate_block_for_timestamp(
+    config: V4PoolReadConfig, target_ts: float, latest_number: int, latest_ts: int
 ) -> int:
     """Estimate block number at a given unix timestamp using average block time."""
-    latest = await w3.eth.get_block("latest")
-    latest_number = int(latest["number"])
-    latest_ts = int(latest["timestamp"])
     blocks_per_day = _BLOCKS_PER_DAY.get(config.chain_id_str, 43_200)
     seconds_ago = latest_ts - target_ts
     blocks_ago = int(seconds_ago * blocks_per_day / 86400)
     return max(0, latest_number - blocks_ago)
+
+
+def _interpolate_block_ts_ms(
+    block_number: int, latest_number: int, latest_ts: int, blocks_per_day: int
+) -> int:
+    """Approximate a block's timestamp from the chain's average block time.
+
+    The volume window only needs timestamps accurate enough for the 24h rolling
+    cutoff, so we interpolate from the latest block rather than fetching each block.
+    """
+    seconds_per_block = 86400 / blocks_per_day
+    est_ts = latest_ts - (latest_number - block_number) * seconds_per_block
+    return int(est_ts * 1000)
 
 
 async def _scan_pool_window_from_rpc(
@@ -278,16 +281,17 @@ async def _scan_pool_window_from_rpc(
     w3 = _make_async_w3(config, rpc_url)
     latest = await w3.eth.get_block("latest")
     latest_number = int(latest["number"])
+    latest_ts = int(latest["timestamp"])
     state = _PoolVolumeState()
 
     window_start_ts = from_ts if from_ts is not None else (time.time() - 86400)
-    start_24h_block = await _estimate_block_for_timestamp(w3, config, window_start_ts)
-    if start_24h_block > latest_number:
+    blocks_per_day = _BLOCKS_PER_DAY.get(config.chain_id_str, 43_200)
+    start_block = _estimate_block_for_timestamp(config, window_start_ts, latest_number, latest_ts)
+    if start_block > latest_number:
         return state
 
-    block_ts_cache: dict[int, int] = {}
     chunk_size = _log_chunk_size(config)
-    for chunk_start in range(start_24h_block, latest_number + 1, chunk_size):
+    for chunk_start in range(start_block, latest_number + 1, chunk_size):
         chunk_end = min(chunk_start + chunk_size - 1, latest_number)
         logs = await w3.eth.get_logs({
             "address": AsyncWeb3.to_checksum_address(config.pool_manager),
@@ -301,7 +305,7 @@ async def _scan_pool_window_from_rpc(
             if usd_volume <= 0:
                 continue
             block_number = int(log["blockNumber"])
-            ts_ms = await _block_timestamp_ms(w3, block_number, block_ts_cache)
+            ts_ms = _interpolate_block_ts_ms(block_number, latest_number, latest_ts, blocks_per_day)
             event_id = event_id_from_log(log)
             if event_id and event_id in state.event_ids:
                 continue
@@ -370,10 +374,18 @@ async def seed_dex_volume_24h(configs: list[V4PoolReadConfig] | None = None) -> 
 
 
 async def sync_pool_volume_24h(config: V4PoolReadConfig) -> None:
-    """Refresh one pool's rolling volume window, filling missed swaps if possible."""
+    """Refresh one pool's rolling volume window after a (re)connect.
+
+    Live swaps are recorded inline while the socket is up, so only the gap since
+    the last persisted swap needs filling — never a full 24h rescan. The gap start
+    is the store mtime (advanced on every save), matching the restart path.
+    """
     _STORE.load()
+    gap_from_ts: float | None = None
+    if _STORE.is_seeded(config.pool_address) and _STORE.path.exists():
+        gap_from_ts = _STORE.path.stat().st_mtime
     try:
-        await _refresh_pool(config)
+        await _refresh_pool(config, gap_from_ts=gap_from_ts)
     except Exception as exc:
         logger.warning("dex_volume_sync_failed", pool=config.pool_address, error=str(exc))
 

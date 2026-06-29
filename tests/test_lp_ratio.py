@@ -426,9 +426,15 @@ class TestActiveLpPositionSnapshot:
             _w3=w3,
             config=SimpleNamespace(chain_id=8453),
             _known_not_minted_token_ids=set(),
+            _token_index_lookup_supported=None,
+            _owned_token_ids=None,
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
+            adapter,
+        )
+        adapter._discover_owned_positions = MethodType(
+            V4PositionManager._discover_owned_positions,
             adapter,
         )
 
@@ -465,7 +471,7 @@ class TestActiveLpPositionSnapshot:
         ]
         w3 = MagicMock()
         w3.eth.block_number = 100
-        w3.eth.get_logs.side_effect = [log_entries, [], log_entries, []]
+        w3.eth.get_logs.side_effect = [log_entries, []]
 
         adapter = SimpleNamespace(
             name="uni-base",
@@ -474,9 +480,15 @@ class TestActiveLpPositionSnapshot:
             _w3=w3,
             config=SimpleNamespace(chain_id=8453),
             _known_not_minted_token_ids=set(),
+            _token_index_lookup_supported=None,
+            _owned_token_ids=None,
         )
         adapter._get_owned_positions_from_logs = MethodType(
             V4PositionManager._get_owned_positions_from_logs,
+            adapter,
+        )
+        adapter._discover_owned_positions = MethodType(
+            V4PositionManager._discover_owned_positions,
             adapter,
         )
 
@@ -487,8 +499,41 @@ class TestActiveLpPositionSnapshot:
         assert second_owned == [valid_token_id]
         assert getattr(adapter, "_token_index_lookup_supported") is False
         assert getattr(adapter, "_known_not_minted_token_ids") == {burned_token_id}
+        # Enumeration and the Transfer-log scan run once; the second call reuses the
+        # in-memory cache because the on-chain NFT count is unchanged.
         assert position_manager_contract.functions.tokenOfOwnerByIndex.return_value.call.call_count == 1
-        assert owner_lookup_calls == [burned_token_id, valid_token_id, valid_token_id]
+        assert w3.eth.get_logs.call_count == 2
+        assert owner_lookup_calls == [burned_token_id, valid_token_id]
+
+    def test_primed_token_ids_cache_hit_costs_only_balance_of(self):
+        # DB-seeded IDs are primed into the manager at startup. When the on-chain
+        # NFT count matches, position reads cost a single balanceOf — no ownerOf,
+        # no enumeration, no Transfer-log scan.
+        owner = "0x" + "cc" * 20
+        position_manager_contract = MagicMock()
+        position_manager_contract.address = "0x" + "dd" * 20
+        position_manager_contract.functions.balanceOf.return_value.call.return_value = 1
+
+        w3 = MagicMock()
+
+        adapter = SimpleNamespace(
+            name="uni-base",
+            _position_manager_contract=position_manager_contract,
+            _lp_account=SimpleNamespace(address=owner),
+            _w3=w3,
+            config=SimpleNamespace(chain_id=8453),
+            _known_not_minted_token_ids=set(),
+            _token_index_lookup_supported=None,
+            _owned_token_ids=None,
+        )
+
+        V4PositionManager.prime_owned_token_ids(adapter, [202])
+        owned = V4PositionManager.get_owned_positions(adapter)
+
+        assert owned == [202]
+        position_manager_contract.functions.ownerOf.assert_not_called()
+        position_manager_contract.functions.tokenOfOwnerByIndex.assert_not_called()
+        w3.eth.get_logs.assert_not_called()
 
     def test_static_position_metadata_uses_position_manager_liquidity_by_token_id(self):
         token_id = 77

@@ -259,6 +259,7 @@ class V4PositionManager:
         self._pool_key: tuple[str, str, int, int, str] | None = None
         self._token_index_lookup_supported: bool | None = None
         self._known_not_minted_token_ids: set[int] = set()
+        self._owned_token_ids: list[int] | None = None
 
     # === Pool key ===
 
@@ -269,67 +270,82 @@ class V4PositionManager:
 
     # === Position queries ===
 
+    def prime_owned_token_ids(self, token_ids: list[int]) -> None:
+        """Seed the in-memory ownership cache from persisted DB IDs so the first
+        position read after startup costs a single balanceOf rather than a log scan."""
+        self._owned_token_ids = list(token_ids)
+
     def get_owned_positions(self, known_token_ids: list[int] | None = None) -> list[int]:
         """Get all position token IDs owned by LP wallet via ERC721 on PositionManager.
 
-        If ``known_token_ids`` is supplied (loaded from DB by the caller), verify each
-        ID is still owned on-chain and return immediately — skipping the log scan entirely.
-        Falls back to the full log scan only when no DB hint is available.
+        Steady state is a single balanceOf call: when the on-chain NFT count matches
+        the cached set, the cache is returned untouched. A caller hint (DB-persisted
+        IDs) or the cache is verified with ownerOf; only a genuine ownership change
+        falls through to full discovery (enumeration or a one-off log scan).
         """
         if not self._position_manager_contract:
             return []
+        pm = self._position_manager_contract
         try:
-            balance = self._position_manager_contract.functions.balanceOf(
-                self._lp_account.address
-            ).call()
+            balance = pm.functions.balanceOf(self._lp_account.address).call()
             if balance == 0:
+                self._owned_token_ids = []
                 return []
 
-            if known_token_ids:
+            if self._owned_token_ids is not None and len(self._owned_token_ids) == balance:
+                return list(self._owned_token_ids)
+
+            hint = known_token_ids or self._owned_token_ids
+            if hint:
+                lp = Web3.to_checksum_address(self._lp_account.address)
                 owned = []
-                for token_id in known_token_ids:
+                for token_id in hint:
                     try:
-                        owner = self._position_manager_contract.functions.ownerOf(token_id).call()
-                        if Web3.to_checksum_address(owner) == Web3.to_checksum_address(self._lp_account.address):
-                            owned.append(token_id)
+                        owner = pm.functions.ownerOf(token_id).call()
                     except Exception:
-                        pass
+                        continue
+                    if Web3.to_checksum_address(owner) == lp:
+                        owned.append(token_id)
                 if len(owned) == balance:
-                    return owned
+                    self._owned_token_ids = owned
+                    return list(owned)
                 logger.warning(
-                    "db_token_ids_mismatch_falling_back_to_log_scan",
+                    "lp_token_ids_mismatch_rediscovering",
                     venue=self.name,
-                    db_ids=known_token_ids,
+                    hint_ids=list(hint),
                     on_chain_balance=balance,
                 )
 
-            token_index_lookup_supported = getattr(
-                self,
-                "_token_index_lookup_supported",
-                None,
-            )
-            if token_index_lookup_supported is not False:
-                try:
-                    owned = [
-                        self._position_manager_contract.functions.tokenOfOwnerByIndex(
-                            self._lp_account.address, i
-                        ).call()
-                        for i in range(balance)
-                    ]
-                    self._token_index_lookup_supported = True
-                    return owned
-                except Exception as e:
-                    if token_index_lookup_supported is None:
-                        logger.info(
-                            "token_of_owner_by_index_unavailable_using_log_fallback",
-                            venue=self.name,
-                            error=str(e),
-                        )
-                    self._token_index_lookup_supported = False
-            return self._get_owned_positions_from_logs(expected_balance=balance)
+            discovered = self._discover_owned_positions(balance)
+            self._owned_token_ids = discovered
+            return list(discovered)
         except Exception as e:
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
+
+    def _discover_owned_positions(self, balance: int) -> list[int]:
+        """Discover owned token IDs with no cache/hint, via enumeration when the
+        PositionManager supports it, otherwise a Transfer-log scan."""
+        if not self._position_manager_contract:
+            return []
+        pm = self._position_manager_contract
+        if self._token_index_lookup_supported is not False:
+            try:
+                owned = [
+                    pm.functions.tokenOfOwnerByIndex(self._lp_account.address, i).call()
+                    for i in range(balance)
+                ]
+                self._token_index_lookup_supported = True
+                return owned
+            except Exception as e:
+                if self._token_index_lookup_supported is None:
+                    logger.info(
+                        "token_of_owner_by_index_unavailable_using_log_fallback",
+                        venue=self.name,
+                        error=str(e),
+                    )
+                self._token_index_lookup_supported = False
+        return self._get_owned_positions_from_logs(expected_balance=balance)
 
     def _get_owned_positions_from_logs(self, *, expected_balance: int | None = None) -> list[int]:
         """Fallback ownership discovery for non-enumerable PositionManager NFTs."""

@@ -216,7 +216,6 @@ async def _seed_lp_token_ids_if_empty(db: Any, lp_managers: dict[str, Any]) -> N
     for venue_name, manager in lp_managers.items():
         existing = await db.positions.get_lp_token_ids(venue_name)
         if existing:
-            manager.prime_owned_token_ids(existing)
             logger.info("lp_token_ids_already_seeded", venue=venue_name, token_ids=existing)
             continue
         try:
@@ -224,7 +223,6 @@ async def _seed_lp_token_ids_if_empty(db: Any, lp_managers: dict[str, Any]) -> N
             token_ids = await loop.run_in_executor(None, manager.get_owned_positions)
             for token_id in token_ids:
                 await db.positions.save_lp_token_id(venue_name, token_id)
-            manager.prime_owned_token_ids(token_ids)
             logger.info("lp_token_ids_seeded", venue=venue_name, token_ids=token_ids)
         except Exception as exc:
             logger.warning("lp_token_ids_seed_failed", venue=venue_name, error=str(exc))

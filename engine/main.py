@@ -208,32 +208,49 @@ def init_lp_managers(venues: dict[str, Any]) -> dict[str, V4PositionManager]:
 
 
 async def _load_lp_token_ids(db: Any, lp_managers: dict[str, Any]) -> None:
-    """Prime LP token ID caches from DB, discovering on-chain only when empty.
+    """Prime LP token ID caches from the DB and reconcile against chain at startup.
 
-    Once seeded, confirmed mint/remove events keep the DB and in-memory cache current.
+    The DB is the durable source of truth, kept current by confirmed mint/remove. The
+    only way the two diverge is a crash between an on-chain confirm and its DB write,
+    so we reconcile once at boot — gated on a single balanceOf, with full discovery
+    only when the count drifts. Runtime reads then stay zero-RPC. An RPC failure here
+    never deletes persisted IDs: we fall back to the DB and retry next boot.
     """
+    loop = asyncio.get_event_loop()
     for venue_name, manager in lp_managers.items():
         existing = await db.positions.get_lp_token_ids(venue_name)
-        if existing:
-            manager.set_owned_token_ids(existing)
-            logger.info("lp_token_ids_loaded_from_db", venue=venue_name, token_ids=existing)
-            continue
         try:
-            loop = asyncio.get_event_loop()
-            token_ids = await loop.run_in_executor(
-                None,
-                lambda: manager.verify_owned_positions(),
-            )
-            for token_id in token_ids:
-                await db.positions.save_lp_token_id(venue_name, token_id)
-            manager.set_owned_token_ids(token_ids)
-            logger.info(
-                "lp_token_ids_seeded",
-                venue=venue_name,
-                token_ids=token_ids,
-            )
+            if existing:
+                count = await loop.run_in_executor(None, manager.owned_position_count)
+                if count == len(existing):
+                    manager.set_owned_token_ids(existing)
+                    logger.info("lp_token_ids_loaded_from_db", venue=venue_name, token_ids=existing)
+                    continue
+                logger.warning(
+                    "lp_token_ids_count_drift",
+                    venue=venue_name,
+                    db_ids=existing,
+                    on_chain_count=count,
+                )
+            token_ids = await loop.run_in_executor(None, manager.verify_owned_positions)
         except Exception as exc:
+            if existing:
+                manager.set_owned_token_ids(existing)
+                logger.warning(
+                    "lp_token_ids_verify_failed_keeping_db",
+                    venue=venue_name,
+                    token_ids=existing,
+                    error=str(exc),
+                )
+                continue
             logger.warning("lp_token_ids_seed_failed", venue=venue_name, error=str(exc))
+            continue
+        for token_id in set(existing) - set(token_ids):
+            await db.positions.remove_lp_token_id(venue_name, token_id)
+        for token_id in set(token_ids) - set(existing):
+            await db.positions.save_lp_token_id(venue_name, token_id)
+        manager.set_owned_token_ids(token_ids)
+        logger.info("lp_token_ids_reconciled", venue=venue_name, db_ids=existing, token_ids=token_ids)
 
 
 @asynccontextmanager

@@ -194,7 +194,7 @@ class LPVenueProtocol(Protocol):
     params: DexParams
     config: "V4ExecutionConfig"
 
-    def get_owned_positions(self, known_token_ids: list[int] | None = None) -> list[int]: ...
+    def get_owned_positions(self) -> list[int]: ...
     def get_position_state(self, token_id: int) -> "PositionState | None": ...
     def calculate_mint_amounts(self) -> tuple[int, int]: ...
 
@@ -278,48 +278,40 @@ class V4PositionManager:
         """Force the next ownership read to verify on-chain/DB state again."""
         self._owned_token_ids = None
 
-    def get_owned_positions(self, known_token_ids: list[int] | None = None) -> list[int]:
-        """Get all position token IDs owned by LP wallet via ERC721 on PositionManager.
+    def get_owned_positions(self) -> list[int]:
+        """Owned LP NFT token IDs from the verified in-memory cache.
 
-        DB hints are verified on-chain before being cached. After startup, routine
-        reads use the verified in-memory cache and confirmed mint/remove paths keep
-        it up to date without repeated ownerOf/log scans.
+        The cache is seeded at startup and kept current by confirmed mint/remove, so
+        routine reads are zero-RPC. A cache miss falls back to on-chain discovery.
         """
-        if self._owned_token_ids is not None and known_token_ids is None:
+        if self._owned_token_ids is not None:
             return list(self._owned_token_ids)
 
         try:
-            return V4PositionManager._discover_owned_positions(
-                self,
-                known_token_ids=known_token_ids,
-                strict=False,
-            )
+            return V4PositionManager._discover_owned_positions(self, strict=False)
         except Exception as e:
             # Runtime reads fail open so transient RPC issues do not block UI/accounting.
             # Startup uses verify_owned_positions(), which propagates infra failures.
             logger.warning("get_owned_positions_failed", venue=self.name, error=str(e))
             return []
 
-    def verify_owned_positions(self, known_token_ids: list[int] | None = None) -> list[int]:
+    def verify_owned_positions(self) -> list[int]:
         """Verify LP NFT ownership and propagate RPC/discovery failures to callers."""
         V4PositionManager.clear_owned_token_ids_cache(self)
-        return V4PositionManager._discover_owned_positions(
-            self,
-            known_token_ids=known_token_ids,
-            strict=True,
-        )
+        return V4PositionManager._discover_owned_positions(self, strict=True)
 
-    def _discover_owned_positions(
-        self,
-        *,
-        known_token_ids: list[int] | None = None,
-        strict: bool,
-    ) -> list[int]:
-        """Discover owned LP token IDs.
+    def owned_position_count(self) -> int:
+        """On-chain LP NFT balance — a cheap drift tripwire for startup reconcile."""
+        if not self._position_manager_contract:
+            return 0
+        return int(self._position_manager_contract.functions.balanceOf(self._lp_account.address).call())
 
-        strict=True is for startup reconciliation: RPC errors propagate, while a
-        NOT_MINTED DB hint is stale data and falls through to discovery. Runtime
-        reads use strict=False and fail open in the public wrapper.
+    def _discover_owned_positions(self, *, strict: bool) -> list[int]:
+        """Discover owned LP token IDs on-chain.
+
+        strict=True is for startup discovery: RPC errors propagate and a positive
+        balance with no discovered IDs is treated as unverified. Runtime reads use
+        strict=False and fail open in the public wrapper.
         """
         if not self._position_manager_contract:
             return []
@@ -328,30 +320,6 @@ class V4PositionManager:
         if balance == 0:
             self._owned_token_ids = []
             return []
-
-        if known_token_ids:
-            lp = Web3.to_checksum_address(self._lp_account.address)
-            owned = []
-            for token_id in known_token_ids:
-                try:
-                    owner = pm.functions.ownerOf(token_id).call()
-                except Exception as e:
-                    if strict and _is_not_minted_error(e):
-                        continue
-                    if strict:
-                        raise
-                    continue
-                if Web3.to_checksum_address(owner) == lp:
-                    owned.append(token_id)
-            if len(owned) == balance:
-                self._owned_token_ids = owned
-                return owned
-            logger.warning(
-                "db_token_ids_mismatch_falling_back_to_log_scan",
-                venue=self.name,
-                db_ids=known_token_ids,
-                on_chain_balance=balance,
-            )
 
         if self._token_index_lookup_supported is not False:
             try:
@@ -371,7 +339,14 @@ class V4PositionManager:
                     )
                 self._token_index_lookup_supported = False
         owned = self._get_owned_positions_from_logs(expected_balance=balance)
-        if strict and balance > 0 and not owned:
+        if balance > 0 and not owned:
+            if not strict:
+                logger.warning(
+                    "owned_position_discovery_empty_not_cached",
+                    venue=self.name,
+                    on_chain_balance=balance,
+                )
+                return []
             raise RuntimeError("owned_position_discovery_empty_with_positive_balance")
         self._owned_token_ids = owned
         return owned

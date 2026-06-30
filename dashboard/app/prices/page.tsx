@@ -228,7 +228,7 @@ function PriceCard({
 export default function PricesPage() {
   const { data: prices, isLoading } = usePrices();
   const { data: blended } = useBlendedPrice();
-  const { data: snapshots } = usePriceHistory(15);
+  const { data: snapshots } = usePriceHistory(60);
 
   const normalizedPrices = prices
     ?.map((p) => ({ venue: p.venue, normalized: normalizeToNgnUsd(p) }))

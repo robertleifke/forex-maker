@@ -14,9 +14,9 @@ const RECONNECT_MAX_MS = 30000;
  * When a WebSocket event arrives, every listed key is refetched.
  */
 const EVENT_TO_KEYS: Record<string, string[][]> = {
-  venue_prices: [['prices'], ['blendedPrice'], ['normalizedPrices'], ['priceHistory'], ['status']],
+  venue_prices: [['prices'], ['normalizedPrices'], ['priceHistory'], ['status']],
   positions: [['status']],
-  portfolio_delta: [['globalPosition']],
+  portfolio_delta: [],
   alert: [['alerts']],
   refill_alert: [['alerts']],
   system: [['status'], ['health']],
@@ -63,6 +63,32 @@ export function useEventStream() {
           for (const key of keys) {
             qc.invalidateQueries({ queryKey: key });
           }
+        }
+
+        if (event.type === 'engine_status' && event.data) {
+          const d = event.data;
+          qc.setQueryData(['status'], (old: any) => ({
+            ...(old || {}),
+            trading_enabled: d.trading_enabled,
+            uptime: d.uptime,
+            venues: d.venues,
+          }));
+        }
+
+        if (event.type === 'portfolio_delta' && event.data) {
+          const d = event.data;
+          qc.setQueryData(['globalPosition'], {
+            total_cngn: d.total_cngn,
+            total_usdt: d.total_usdt,
+            total_usdc: d.total_usdc,
+            total_usd_value: d.total_usd_value,
+            delta_ratio: d.delta_ratio,
+            target_delta: d.target_delta,
+          });
+        }
+
+        if (event.type === 'blended_price' && event.data) {
+          qc.setQueryData(['blendedPrice'], event.data);
         }
 
         if (event.type === 'dex_arb_curve' && event.data) {

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import { createChart, ColorType, LineStyle, CrosshairMode } from 'lightweight-charts';
+import type { UTCTimestamp } from 'lightweight-charts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   formatNumber,
@@ -45,7 +46,7 @@ function bucketMs(windowMinutes: number): number {
 }
 
 function buildSeriesData(snapshots: PriceSnapshot[], windowMinutes = 60): {
-  byVenue: Record<string, { time: number; value: number }[]>;
+  byVenue: Record<string, { time: UTCTimestamp; value: number }[]>;
   venues: string[];
 } {
   const venueSet = new Set<string>();
@@ -71,7 +72,7 @@ function buildSeriesData(snapshots: PriceSnapshot[], windowMinutes = 60): {
   for (const venue of venues) byVenue[venue] = [];
 
   for (const [ts, values] of sorted) {
-    const timeSec = Math.floor(ts / 1000) as unknown as number;
+    const timeSec = Math.floor(ts / 1000) as UTCTimestamp;
     for (const venue of venues) {
       if (venue in values) {
         byVenue[venue].push({ time: timeSec, value: values[venue] });
@@ -82,17 +83,16 @@ function buildSeriesData(snapshots: PriceSnapshot[], windowMinutes = 60): {
   return { byVenue, venues };
 }
 
-function buildSpreadData(snapshots: PriceSnapshot[], windowMinutes = 60): { time: number; value: number }[] {
+function buildSpreadData(snapshots: PriceSnapshot[], windowMinutes = 60): { time: UTCTimestamp; value: number }[] {
   const { byVenue, venues } = buildSeriesData(snapshots, windowMinutes);
   if (venues.length < 2) return [];
 
   // Merge all timestamps
-  const tsMap = new Map<number, Record<string, number>>();
+  const tsMap = new Map<UTCTimestamp, Record<string, number>>();
   for (const venue of venues) {
     for (const pt of byVenue[venue]) {
-      const t = pt.time as unknown as number;
-      if (!tsMap.has(t)) tsMap.set(t, {});
-      tsMap.get(t)![venue] = pt.value;
+      if (!tsMap.has(pt.time)) tsMap.set(pt.time, {});
+      tsMap.get(pt.time)![venue] = pt.value;
     }
   }
 
@@ -103,29 +103,26 @@ function buildSpreadData(snapshots: PriceSnapshot[], windowMinutes = 60): { time
       if (prices.length < 2) return null;
       const min = Math.min(...prices);
       const max = Math.max(...prices);
-      return { time: ts as unknown as number, value: Math.round(((max - min) / min) * 10000) };
+      return { time: ts, value: Math.round(((max - min) / min) * 10000) };
     })
-    .filter(Boolean) as { time: number; value: number }[];
+    .filter(Boolean) as { time: UTCTimestamp; value: number }[];
 }
 
-function buildDeltaData(snapshots: PriceSnapshot[], vwapNgn: number | null, windowMinutes = 60): Record<string, { time: number; value: number }[]> {
+function buildDeltaData(snapshots: PriceSnapshot[], vwapNgn: number | null, windowMinutes = 60): Record<string, { time: UTCTimestamp; value: number }[]> {
   const { byVenue, venues } = buildSeriesData(snapshots, windowMinutes);
 
-  // Build a lookup for average price per timestamp across venues
-  const tsAvg = new Map<number, number[]>();
+  const tsAvg = new Map<UTCTimestamp, number[]>();
   for (const venue of venues) {
     for (const pt of byVenue[venue]) {
-      const t = pt.time as unknown as number;
-      if (!tsAvg.has(t)) tsAvg.set(t, []);
-      tsAvg.get(t)!.push(pt.value);
+      if (!tsAvg.has(pt.time)) tsAvg.set(pt.time, []);
+      tsAvg.get(pt.time)!.push(pt.value);
     }
   }
 
-  const result: Record<string, { time: number; value: number }[]> = {};
+  const result: Record<string, { time: UTCTimestamp; value: number }[]> = {};
   for (const venue of venues) {
     result[venue] = byVenue[venue].map((pt) => {
-      const t = pt.time as unknown as number;
-      const avgs = tsAvg.get(t) ?? [];
+      const avgs = tsAvg.get(pt.time) ?? [];
       const base = vwapNgn ?? (avgs.length ? avgs.reduce((a, b) => a + b, 0) / avgs.length : pt.value);
       return { time: pt.time, value: Math.round(((pt.value - base) / base) * 10000) };
     });
@@ -184,8 +181,8 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
     }
     const nowSec = Math.floor(Date.now() / 1000);
     chart.timeScale().setVisibleRange({
-      from: (nowSec - minutes * 60) as any,
-      to: nowSec as any,
+      from: (nowSec - minutes * 60) as UTCTimestamp,
+      to: nowSec as UTCTimestamp,
     });
   }, []);
 

@@ -68,7 +68,7 @@ function buildSeriesData(snapshots: PriceSnapshot[], windowMinutes = 60): {
   const sorted = Array.from(buckets.entries()).sort((a, b) => a[0] - b[0]);
   const venues = Array.from(venueSet);
 
-  const byVenue: Record<string, { time: number; value: number }[]> = {};
+  const byVenue: Record<string, { time: UTCTimestamp; value: number }[]> = {};
   for (const venue of venues) byVenue[venue] = [];
 
   for (const [ts, values] of sorted) {

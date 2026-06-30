@@ -9,15 +9,21 @@ import { api } from '../api';
 
 export const LAST_EVENT_PACKET_QUERY_KEY = ['eventStreamLastPacket'] as const;
 
-export function usePriceHistory(windowMinutes = 60) {
-  const fromTs = Date.now() - windowMinutes * 60 * 1000;
-  // Enough points for a smooth chart: ~2 per minute per venue × 5 venues
-  const limit = Math.min(windowMinutes * 10, 1000);
+// 5 venues × 2 ticks/min = ~10 rows/min, capped at 5000
+function priceHistoryLimit(windowMinutes: number | undefined): number {
+  if (!windowMinutes || !isFinite(windowMinutes)) return 5000;
+  return Math.min(Math.ceil(windowMinutes * 5 * 2), 5000);
+}
+
+export function usePriceHistory(windowMinutes?: number) {
+  const fromTs = windowMinutes && isFinite(windowMinutes)
+    ? Date.now() - windowMinutes * 60 * 1000
+    : undefined;
   return useQuery({
-    queryKey: ['priceHistory', windowMinutes],
-    queryFn: () => api.getPriceHistory({ from_ts: fromTs, limit }),
-    // Re-fetch every 30s so the chart accumulates new points
+    queryKey: ['priceHistory', windowMinutes ?? 'all'],
+    queryFn: () => api.getPriceHistory({ from_ts: fromTs, limit: priceHistoryLimit(windowMinutes) }),
     refetchInterval: 30_000,
+    staleTime: 25_000,
   });
 }
 

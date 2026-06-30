@@ -382,6 +382,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     scheduler.start()
 
+    # Warm up prices first so portfolio valuation has a valid cNGN/USD rate,
+    # then fire portfolio_delta so the retained WS snapshot is populated immediately.
+    try:
+        await price_aggregator.fetch_all()
+        await scheduler.position_jobs.check_portfolio_delta()
+    except Exception as exc:
+        logger.warning("startup_portfolio_warmup_failed", error=str(exc))
+
     if settings.telegram_bot_token:
         try:
             await bot.start(settings, runtime)

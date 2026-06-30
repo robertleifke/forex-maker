@@ -18,6 +18,8 @@ RETAINED_EVENT_TYPES = {
     "venue_prices",
     "positions",
     "portfolio_delta",
+    "blended_price",
+    "engine_status",
     "account_balances",
     "system",
 }

@@ -45,8 +45,6 @@ class PositionJobs:
             total_usdt = exposure.total_usdt
             total_usdc = exposure.total_usdc
             total_usd_value = exposure.total_usd_value
-            if total_usd_value <= 0:
-                return
 
             target = exposure.target_delta
             delta_ratio = exposure.delta_ratio

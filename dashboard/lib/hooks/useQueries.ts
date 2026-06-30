@@ -31,7 +31,13 @@ export function useLastEventPacket() {
 }
 
 export function useStatus() {
-  return useQuery({ queryKey: ['status'], queryFn: api.getStatus });
+  return useQuery({
+    queryKey: ['status'],
+    queryFn: api.getStatus,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
 }
 
 export function useVenueOrders(venue: string, enabled = true) {
@@ -53,7 +59,13 @@ export function usePrices() {
 }
 
 export function useBlendedPrice() {
-  return useQuery({ queryKey: ['blendedPrice'], queryFn: api.getBlendedPrice });
+  return useQuery({
+    queryKey: ['blendedPrice'],
+    queryFn: api.getBlendedPrice,
+    staleTime: 30_000,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
 }
 
 export function useNormalizedPrices() {
@@ -61,7 +73,13 @@ export function useNormalizedPrices() {
 }
 
 export function useGlobalPosition() {
-  return useQuery({ queryKey: ['globalPosition'], queryFn: api.getGlobalPosition });
+  return useQuery({
+    queryKey: ['globalPosition'],
+    queryFn: api.getGlobalPosition,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
 }
 
 export function useArbitrageStatus() {

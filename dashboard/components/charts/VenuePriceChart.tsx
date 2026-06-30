@@ -333,7 +333,7 @@ export function VenuePriceChart({ blended }: VenuePriceChartProps) {
     }
 
     seriesRef.current = newSeries;
-    applyWindow(windowMinutes);
+    if (windowChanged) { applyWindow(windowMinutes); windowAppliedRef.current = windowKey; }
   }, [snapshots, chartType, vwapNgn, applyWindow, windowMinutes]);
 
   const noData = !snapshots?.length;

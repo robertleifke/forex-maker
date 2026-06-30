@@ -196,6 +196,17 @@ class QuidaxAdapter(VenueAdapter):
             return rounded_price, rounded_amount
         return price, amount
 
+    def _round_market_volume(self, volume_usdt: Decimal) -> Decimal:
+        """Quantize a market-order USDT volume to the venue's precision.
+
+        Quidax rejects volumes finer than the usdtcngn market step ("Price or
+        quantity precision exceeds maximum limit"). ROUND_DOWN so the cNGN spent
+        on a sell-side (buy USDT) order never exceeds buy-leg holdings.
+        """
+        if self.market == "usdtcngn":
+            return volume_usdt.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        return volume_usdt
+
     async def _get_tracked_open_order_rows(self, live_order_ids: set[str] | None = None) -> list[dict[str, Any]]:
         return await self._order_state.get_open_order_rows(
             self._api.fetch_order_by_id,
@@ -741,7 +752,8 @@ class QuidaxAdapter(VenueAdapter):
             (success, executed_usdt, avg_price_cngn_per_usdt, error)
         """
         client = await self._get_client()
-        payload = {"market": self.market, "side": side, "ord_type": "market", "volume": str(volume_usdt)}
+        submit_volume = self._round_market_volume(volume_usdt)
+        payload = {"market": self.market, "side": side, "ord_type": "market", "volume": str(submit_volume)}
         last_error: str | None = None
 
         for attempt, delay in enumerate([0, 2, 4, 8, 16, 32]):

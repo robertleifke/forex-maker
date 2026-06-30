@@ -108,6 +108,25 @@ async def test_get_position_uses_configured_quidax_user_id_for_wallet_balances()
 
 
 @pytest.mark.asyncio
+async def test_place_market_order_quantizes_volume_to_market_precision():
+    """A high-precision USDT volume (from order-book walking) must be rounded down
+    to the usdtcngn 0.01 step before submission, or Quidax rejects it with
+    'Price or quantity precision exceeds maximum limit'."""
+    client = _FakeClient({
+        "status": "success",
+        "data": {"executed_volume": "8.34", "avg_price": "1639.34"},
+    })
+    adapter = _make_adapter()
+    adapter._get_client = AsyncMock(return_value=client)
+
+    success, _, _, error = await adapter.place_market_order("buy", Decimal("8.347263847263048"))
+
+    assert success and error is None
+    assert client.last_json is not None
+    assert client.last_json["volume"] == "8.34"
+
+
+@pytest.mark.asyncio
 async def test_sync_order_ladder_uses_usdtcngn_order_semantics_and_balances_to_smaller_notional():
     """Order sizing balances to whichever leg is smaller in notional terms.
 

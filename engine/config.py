@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Database
     db_path: str = "./data/cngn.db"
 
+    # CORS — comma-separated list of allowed origins. Override in .env for local dev.
+    allowed_origins: str = "https://cngn.lavavc.io"
+
     # Direct API access token (protects mutating endpoints; TG bot uses engine internals directly)
     engine_api_token: str = Field(default="", description="Bearer token for direct API access")
 

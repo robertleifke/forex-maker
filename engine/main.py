@@ -444,11 +444,8 @@ app.include_router(api_router, prefix="/api")
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket, token: str = "") -> None:
+async def websocket_endpoint(ws: WebSocket) -> None:
     """Stream real-time events (prices, positions, alerts, arbitrage) to clients."""
-    if not settings.engine_api_token or token != settings.engine_api_token:
-        await ws.close(code=4401)
-        return
     await ws_manager.handle(ws)
 
 

@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     # CORS — comma-separated list of allowed origins. Override in .env for local dev.
     allowed_origins: str = "https://cngn.lavavc.io"
 
-    # Direct API access token (protects mutating endpoints; TG bot uses engine internals directly)
-    engine_api_token: str = Field(default="", description="Bearer token for direct API access")
+    # Full-access token — Telegram bot and operator scripts only. Never expose to frontend.
+    engine_api_token: str = Field(default="", description="Bearer token for mutating API access")
 
     # Public POST /prices/refresh triggers live outbound venue fetches, so it is
     # rate-limited to at most one refresh per this interval (seconds) across all callers.

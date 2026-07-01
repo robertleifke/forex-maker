@@ -65,6 +65,7 @@ def require_account_manager(runtime: EngineRuntime = Depends(get_runtime)) -> An
 
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> bool:
+    """Full-access token — required for mutating endpoints. Telegram bot / scripts only."""
     if not settings.engine_api_token:
         raise HTTPException(status_code=500, detail="ENGINE_API_TOKEN is not configured")
     if credentials.credentials != settings.engine_api_token:

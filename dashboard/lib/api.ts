@@ -18,16 +18,9 @@ import type {
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
-const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || '';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...(options?.headers || {}),
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
-    },
-  });
+  const response = await fetch(url, options);
   if (!response.ok) {
     throw new Error(`API error: ${response.status} ${response.statusText}`);
   }

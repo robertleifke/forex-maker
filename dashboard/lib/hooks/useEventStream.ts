@@ -6,6 +6,7 @@ import { addNotification } from '@/lib/notifications';
 import { LAST_EVENT_PACKET_QUERY_KEY } from './useQueries';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
+const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || '';
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
@@ -45,7 +46,8 @@ export function useEventStream() {
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
 
-    const wsUrl = WS_URL || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
+    const base = WS_URL || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
+    const wsUrl = API_TOKEN ? `${base}?token=${encodeURIComponent(API_TOKEN)}` : base;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

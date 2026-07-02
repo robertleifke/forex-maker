@@ -422,10 +422,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def _rate_limit_key(request: Request) -> str:
-    # Behind nginx-proxy the socket peer is the proxy container, so keying on it
-    # would put all public clients in one bucket. X-Real-IP is authoritative on the
-    # public path (nginx overwrites any client-sent value); direct/local traffic
-    # has no such header and falls back to the socket address.
+    # X-Real-IP is set authoritatively by nginx-proxy; without it all public clients would share the proxy's IP bucket
     return request.headers.get("x-real-ip") or get_remote_address(request)
 
 

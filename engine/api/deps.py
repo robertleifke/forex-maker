@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Any, cast
 
 from fastapi import Depends, HTTPException, Request
@@ -68,6 +69,6 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(secur
     """Full-access token — required for mutating endpoints. Telegram bot / scripts only."""
     if not settings.engine_api_token:
         raise HTTPException(status_code=500, detail="ENGINE_API_TOKEN is not configured")
-    if credentials.credentials != settings.engine_api_token:
+    if not secrets.compare_digest(credentials.credentials, settings.engine_api_token):
         raise HTTPException(status_code=401, detail="Invalid token")
     return True

@@ -13,6 +13,7 @@ from web3 import Web3
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import structlog
@@ -420,7 +421,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("application_stopped")
 
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+def _rate_limit_key(request: Request) -> str:
+    # Behind nginx-proxy the socket peer is the proxy container, so keying on it
+    # would put all public clients in one bucket. X-Real-IP is authoritative on the
+    # public path (nginx overwrites any client-sent value); direct/local traffic
+    # has no such header and falls back to the socket address.
+    return request.headers.get("x-real-ip") or get_remote_address(request)
+
+
+limiter = Limiter(key_func=_rate_limit_key, default_limits=["60/minute"])
 
 app = FastAPI(
     title="CNGN Trading Engine",
@@ -431,6 +440,7 @@ app = FastAPI(
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

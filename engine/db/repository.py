@@ -99,9 +99,6 @@ class AlertStore(_Store):
     async def get_alerts(self, limit: int = 20) -> list[Any]:
         return await alerts.get_alerts(self._conn, limit)
 
-    async def acknowledge_alert(self, alert_id: int) -> None:
-        await alerts.acknowledge_alert(self._conn, alert_id)
-
 
 class ArbitrageStore(_Store):
     async def insert_arbitrage_opportunity(self, opp: ArbitrageOpportunity) -> None:

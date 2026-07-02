@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 
 // ── Queries ─────────────────────────────────────────────────────────────────
@@ -131,18 +131,5 @@ export function usePoolMetricsHistory(minutes: number) {
     queryKey: ['poolMetricsHistory', minutes],
     queryFn: () => api.getPoolMetricsHistory(minutes),
     refetchInterval: 60_000,
-  });
-}
-
-// ── Mutations ───────────────────────────────────────────────────────────────
-
-export function useAcknowledgeAlert() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: number) =>
-      api.acknowledgeAlert(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['alerts'] });
-    },
   });
 }

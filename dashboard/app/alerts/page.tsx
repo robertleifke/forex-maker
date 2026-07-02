@@ -3,10 +3,9 @@
 import { useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatRelativeTime, formatTimestamp } from '@/lib/utils';
-import { useAlerts, useAcknowledgeAlert } from '@/lib/hooks/useQueries';
+import { useAlerts } from '@/lib/hooks/useQueries';
 import {
   Check,
-  CheckCheck,
   AlertCircle,
   AlertTriangle,
   Info,
@@ -15,7 +14,7 @@ import {
 } from 'lucide-react';
 import type { Alert } from '@/types';
 
-type FilterType = 'all' | 'unacknowledged' | 'critical' | 'warning' | 'info';
+type FilterType = 'all' | 'critical' | 'warning' | 'info';
 
 const severityIcons = {
   critical: AlertCircle,
@@ -29,42 +28,30 @@ const severityLabels = {
   info: 'Info',
 };
 
-function AlertItem({
-  alert,
-  onAcknowledge,
-}: {
-  alert: Alert;
-  onAcknowledge: (id: number) => void;
-}) {
+function AlertItem({ alert }: { alert: Alert }) {
   const Icon = severityIcons[alert.severity];
 
   return (
-    <Card className={`relative overflow-hidden transition-all duration-300 rounded-sm border ${alert.acknowledged
-      ? 'bg-white/[0.01] border-white/[0.02] opacity-50'
-      : alert.severity === 'critical'
-        ? 'bg-gradient-to-r from-red-500/10 to-transparent border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.05)]'
-        : alert.severity === 'warning'
-          ? 'bg-gradient-to-r from-yellow-500/10 to-transparent border-yellow-500/30 shadow-[0_0_15px_rgba(234,179,8,0.05)]'
-          : 'bg-white/[0.03] border-white/[0.05] hover:border-emerald-500/30 hover:shadow-[0_0_15px_rgba(16,185,129,0.05)]'
+    <Card className={`relative overflow-hidden transition-all duration-300 rounded-sm border ${alert.severity === 'critical'
+      ? 'bg-gradient-to-r from-red-500/10 to-transparent border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.05)]'
+      : alert.severity === 'warning'
+        ? 'bg-gradient-to-r from-yellow-500/10 to-transparent border-yellow-500/30 shadow-[0_0_15px_rgba(234,179,8,0.05)]'
+        : 'bg-white/[0.03] border-white/[0.05] hover:border-emerald-500/30 hover:shadow-[0_0_15px_rgba(16,185,129,0.05)]'
       }`}>
       <CardContent className="p-4 flex flex-col md:flex-row md:items-start gap-4">
-        <Icon className={`h-5 w-5 md:mt-0.5 shrink-0 ${alert.acknowledged
-          ? 'text-white/20'
-          : alert.severity === 'critical'
-            ? 'text-red-500'
-            : alert.severity === 'warning'
-              ? 'text-yellow-500'
-              : 'text-emerald-500'
+        <Icon className={`h-5 w-5 md:mt-0.5 shrink-0 ${alert.severity === 'critical'
+          ? 'text-red-500'
+          : alert.severity === 'warning'
+            ? 'text-yellow-500'
+            : 'text-emerald-500'
           }`} />
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-2">
-            <span className={`px-2 py-0.5 rounded-sm text-[8px] font-mono uppercase tracking-widest border ${alert.acknowledged
-              ? 'bg-white/5 border-white/10 text-white/40'
-              : alert.severity === 'critical'
-                ? 'bg-red-500/10 border-red-500/20 text-red-500'
-                : alert.severity === 'warning'
-                  ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-500'
-                  : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
+            <span className={`px-2 py-0.5 rounded-sm text-[8px] font-mono uppercase tracking-widest border ${alert.severity === 'critical'
+              ? 'bg-red-500/10 border-red-500/20 text-red-500'
+              : alert.severity === 'warning'
+                ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-500'
+                : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
               }`}>
               {severityLabels[alert.severity]}
             </span>
@@ -78,25 +65,9 @@ function AlertItem({
               ({formatRelativeTime(alert.timestamp)})
             </span>
           </div>
-          <p className={`text-[11px] font-mono break-words leading-relaxed ${alert.acknowledged ? 'text-white/40' : 'text-white/70'}`}>
+          <p className="text-[11px] font-mono break-words leading-relaxed text-white/70">
             {alert.message}
           </p>
-        </div>
-        <div className="shrink-0 flex flex-col justify-center mt-2 md:mt-0">
-          {alert.acknowledged ? (
-            <div className="flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-widest text-white/20 px-3 py-1.5 border border-white/5 bg-white/[0.01] rounded-sm">
-              <CheckCheck className="h-3 w-3" />
-              ACKNOWLEDGED
-            </div>
-          ) : (
-            <button
-              onClick={() => onAcknowledge(alert.id)}
-              className="group flex items-center justify-center gap-2 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-sm text-[9px] font-mono uppercase tracking-widest text-emerald-500 transition-colors w-full md:w-auto"
-            >
-              <Check className="h-3 w-3 group-hover:scale-110 transition-transform" />
-              ACKNOWLEDGE
-            </button>
-          )}
         </div>
       </CardContent>
     </Card>
@@ -106,24 +77,10 @@ function AlertItem({
 export default function AlertsPage() {
   const [filter, setFilter] = useState<FilterType>('all');
   const { data: alerts, isLoading } = useAlerts(100);
-  const acknowledgeAlert = useAcknowledgeAlert();
-
-  const handleAcknowledge = (id: number) => {
-    acknowledgeAlert.mutate(id);
-  };
-
-  const handleAcknowledgeAll = () => {
-    const unacknowledged = alerts?.filter((a) => !a.acknowledged) || [];
-    unacknowledged.forEach((alert) => {
-      acknowledgeAlert.mutate(alert.id);
-    });
-  };
 
   // Apply filters
   const filteredAlerts = alerts?.filter((alert) => {
     switch (filter) {
-      case 'unacknowledged':
-        return !alert.acknowledged;
       case 'critical':
         return alert.severity === 'critical';
       case 'warning':
@@ -135,9 +92,9 @@ export default function AlertsPage() {
     }
   });
 
-  const unacknowledgedCount = alerts?.filter((a) => !a.acknowledged).length || 0;
   const criticalCount = alerts?.filter((a) => a.severity === 'critical').length || 0;
   const warningCount = alerts?.filter((a) => a.severity === 'warning').length || 0;
+  const infoCount = alerts?.filter((a) => a.severity === 'info').length || 0;
 
   return (
     <div className="relative flex flex-col min-h-[calc(100vh-4rem)] bg-[#0B0E14] text-slate-300 p-2 md:p-6 animate-in fade-in duration-500 font-sans space-y-6 overflow-hidden">
@@ -157,11 +114,6 @@ export default function AlertsPage() {
               <div className="h-2 w-2 border-t-2 border-emerald-500 rounded-full animate-spin" />
               <span>Querying Logs...</span>
             </div>
-          ) : unacknowledgedCount > 0 ? (
-            <button onClick={handleAcknowledgeAll} className="flex items-center gap-2 bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-widest font-mono text-yellow-500 transition-colors">
-              <CheckCheck className="h-3 w-3" />
-              ACKNOWLEDGE ALL ({unacknowledgedCount})
-            </button>
           ) : (
             <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-sm text-[10px] uppercase tracking-widest font-mono text-emerald-500/80">
               <Check className="h-3 w-3" />
@@ -181,20 +133,20 @@ export default function AlertsPage() {
         </Card>
         <Card className="relative bg-gradient-to-br from-white/[0.02] to-transparent border-white/[0.05] backdrop-blur-md shadow-lg">
           <CardContent className="pt-6 pb-4">
-            <div className="text-2xl font-mono font-bold text-yellow-500 mb-1">{isLoading ? <div className="h-8 w-16 bg-yellow-500/20 rounded-sm animate-pulse" /> : unacknowledgedCount}</div>
-            <div className="text-[9px] font-mono tracking-widest uppercase text-white/40">UNACKNOWLEDGED</div>
-          </CardContent>
-        </Card>
-        <Card className="relative bg-gradient-to-br from-white/[0.02] to-transparent border-white/[0.05] backdrop-blur-md shadow-lg">
-          <CardContent className="pt-6 pb-4">
             <div className="text-2xl font-mono font-bold text-red-500 mb-1">{isLoading ? <div className="h-8 w-16 bg-red-500/20 rounded-sm animate-pulse" /> : criticalCount}</div>
             <div className="text-[9px] font-mono tracking-widest uppercase text-white/40">CRITICAL</div>
           </CardContent>
         </Card>
         <Card className="relative bg-gradient-to-br from-white/[0.02] to-transparent border-white/[0.05] backdrop-blur-md shadow-lg">
           <CardContent className="pt-6 pb-4">
-            <div className="text-2xl font-mono font-bold text-emerald-500 mb-1">{isLoading ? <div className="h-8 w-16 bg-emerald-500/20 rounded-sm animate-pulse" /> : warningCount}</div>
+            <div className="text-2xl font-mono font-bold text-yellow-500 mb-1">{isLoading ? <div className="h-8 w-16 bg-yellow-500/20 rounded-sm animate-pulse" /> : warningCount}</div>
             <div className="text-[9px] font-mono tracking-widest uppercase text-white/40">WARNINGS</div>
+          </CardContent>
+        </Card>
+        <Card className="relative bg-gradient-to-br from-white/[0.02] to-transparent border-white/[0.05] backdrop-blur-md shadow-lg">
+          <CardContent className="pt-6 pb-4">
+            <div className="text-2xl font-mono font-bold text-emerald-500 mb-1">{isLoading ? <div className="h-8 w-16 bg-emerald-500/20 rounded-sm animate-pulse" /> : infoCount}</div>
+            <div className="text-[9px] font-mono tracking-widest uppercase text-white/40">INFO</div>
           </CardContent>
         </Card>
       </div>
@@ -210,7 +162,6 @@ export default function AlertsPage() {
             {(
               [
                 ['all', 'ALL'],
-                ['unacknowledged', 'UNACKNOWLEDGED'],
                 ['critical', 'CRITICAL'],
                 ['warning', 'WARNING'],
                 ['info', 'INFO'],
@@ -225,9 +176,6 @@ export default function AlertsPage() {
                   }`}
               >
                 {label}
-                {value === 'unacknowledged' && unacknowledgedCount > 0 && (
-                  <span className="bg-yellow-500/20 text-yellow-500 px-1.5 py-0.5 rounded-[2px] text-[8px]">{unacknowledgedCount}</span>
-                )}
               </button>
             ))}
           </div>
@@ -247,16 +195,11 @@ export default function AlertsPage() {
                 </div>
                 <div className="h-3 w-1/2 bg-white/5 rounded-sm animate-pulse" />
               </div>
-              <div className="h-8 w-28 bg-white/5 rounded-sm animate-pulse shrink-0 ml-auto hidden md:block" />
             </Card>
           ))
         ) : filteredAlerts && filteredAlerts.length > 0 ? (
           filteredAlerts.map((alert) => (
-            <AlertItem
-              key={alert.id}
-              alert={alert}
-              onAcknowledge={handleAcknowledge}
-            />
+            <AlertItem key={alert.id} alert={alert} />
           ))
         ) : (
           <Card className="bg-white/[0.02] border border-dashed border-white/10 rounded-sm">

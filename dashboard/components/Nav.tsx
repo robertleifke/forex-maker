@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   LayoutDashboard,
   TrendingUp,
@@ -25,11 +24,7 @@ const navItems = [
   { href: '/docs', label: 'Docs', icon: BookOpen },
 ];
 
-interface NavProps {
-  unacknowledgedAlerts?: number;
-}
-
-export function Nav({ unacknowledgedAlerts = 0 }: NavProps) {
+export function Nav() {
   const pathname = usePathname();
 
   return (
@@ -56,11 +51,6 @@ export function Nav({ unacknowledgedAlerts = 0 }: NavProps) {
                     >
                       <Icon className="h-4 w-4" />
                       {item.label}
-                      {item.href === '/alerts' && unacknowledgedAlerts > 0 && (
-                        <Badge variant="destructive" className="ml-1 h-5 px-1.5">
-                          {unacknowledgedAlerts}
-                        </Badge>
-                      )}
                     </Button>
                   </Link>
                 );

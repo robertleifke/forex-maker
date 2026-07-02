@@ -130,9 +130,6 @@ export const api = {
   getAlerts: (limit = 20): Promise<Alert[]> =>
     fetchJson(`${API_BASE}/alerts?limit=${limit}`),
 
-  acknowledgeAlert: (id: number): Promise<{ status: string; alert_id: number }> =>
-    fetchJson(`${API_BASE}/alerts/${id}/acknowledge`, { method: 'POST' }),
-
   // Actions
   getActions: (params?: {
     venue?: string;

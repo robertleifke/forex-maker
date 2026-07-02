@@ -91,7 +91,6 @@ export interface Alert {
   severity: 'info' | 'warning' | 'critical';
   category: string;
   message: string;
-  acknowledged: boolean;
 }
 
 export interface ArbitrageParams {

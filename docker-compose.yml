@@ -1,7 +1,10 @@
 services:
   engine:
     image: ghcr.io/lavavc/automated-infra:latest
-    restart: always
+    restart: unless-stopped
+    # Cap engine memory on the 4GB host so a runaway/leak restarts the container
+    # instead of OOM-killing the whole box (which takes down every other service).
+    mem_limit: 3g
     # Published on loopback for local debugging only. Public traffic reaches the
     # container over the nginx-proxy network below, not via this host port.
     ports:

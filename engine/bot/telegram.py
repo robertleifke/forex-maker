@@ -610,6 +610,10 @@ async def forward_alert(event: dict[str, Any]) -> None:
     severity = event.get("severity", "")
     if severity not in ("critical", "warning"):
         return
+    # Some events are recorded to the dashboard/alert store but deliberately
+    # kept off Telegram (e.g. routine portfolio-delta deviations).
+    if event.get("skip_telegram"):
+        return
     now = time.monotonic()
     for key, expires_at in list(_recent_alerts.items()):
         if expires_at <= now:
@@ -669,10 +673,13 @@ async def start(s: Settings, runtime: EngineRuntime) -> None:
 async def stop() -> None:
     global _app, _runtime
     if _app:
-        if _app.updater is not None:
-            await _app.updater.stop()
-        await _app.stop()
-        await _app.shutdown()
+        try:
+            if _app.updater is not None and _app.updater.running:
+                await _app.updater.stop()
+            await _app.stop()
+            await _app.shutdown()
+        except Exception as exc:
+            logger.warning("telegram_bot_stop_error", error=str(exc))
         _app = None
         logger.info("telegram_bot_stopped")
     _runtime = None

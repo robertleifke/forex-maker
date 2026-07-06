@@ -69,6 +69,31 @@ class MarketJobs:
             self.context.broadcast({"type": "venue_prices", "data": prices_data})
             valid_count = sum(1 for price in venue_prices.values() if price.is_valid)
             logger.debug("venue_prices_updated", total=len(venue_prices), valid=valid_count)
+
+            if self.context.blended_calculator:
+                try:
+                    blended = await self.context.blended_calculator.get_blended_price()
+                    self.context.broadcast({
+                        "type": "blended_price",
+                        "data": {
+                            "vwap": float(blended.vwap),
+                            "twap_5m": float(blended.twap_5m),
+                            "twap_1h": float(blended.twap_1h),
+                            "reference_price_ngn": float(blended.reference_price_ngn),
+                            "venue_prices": {k: float(v) for k, v in blended.venue_prices.items()},
+                            "timestamp": blended.timestamp,
+                            "num_sources": blended.num_sources,
+                            "total_venues": blended.total_venues,
+                            "confidence": blended.confidence,
+                            "dex_volume_24h_usd": {
+                                k: float(v) if v is not None else None
+                                for k, v in blended.dex_volume_24h_usd.items()
+                            },
+                        },
+                    })
+                except Exception as exc:
+                    logger.warning("blended_price_broadcast_failed", error=str(exc))
+
             await self.sync_cex_orders()
         except Exception as exc:
             logger.error("price_update_failed", error=str(exc))

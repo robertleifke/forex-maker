@@ -161,6 +161,9 @@ class TradingScheduler:
         if self.state.started:
             return
 
+        import time as _time
+        self._start_time = _time.time()
+
         from datetime import datetime, timezone as tz
 
         self.scheduler.add_job(
@@ -289,6 +292,7 @@ class TradingScheduler:
 
     async def _update_price(self) -> None:
         await self.market_jobs.update_price()
+        self._broadcast_engine_status()
 
     async def _sync_positions(self) -> None:
         await self.position_jobs.sync_positions()
@@ -304,6 +308,20 @@ class TradingScheduler:
 
     def _schedule_dex_bootstrap(self) -> None:
         self.arbitrage_jobs.schedule_dex_bootstrap()
+
+    def _broadcast_engine_status(self) -> None:
+        import time as _time
+        self.broadcast({
+            "type": "engine_status",
+            "data": {
+                "trading_enabled": self.state.trading_enabled,
+                "uptime": int(_time.time() - self._start_time) if hasattr(self, "_start_time") else 0,
+                "venues": [
+                    {"name": name, "enabled": getattr(v, "enabled", True), "paused": getattr(v, "paused", False)}
+                    for name, v in self.context.venues.items()
+                ],
+            },
+        })
 
     async def _bootstrap_dex_arb_curve(self) -> None:
         await self.arbitrage_jobs.bootstrap_dex_arb_curve()

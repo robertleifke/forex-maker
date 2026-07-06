@@ -177,7 +177,6 @@ class Alert(BaseModel):
     severity: Literal["info", "warning", "critical"]
     category: str
     message: str
-    acknowledged: bool = False
 
 
 # === Account types ===

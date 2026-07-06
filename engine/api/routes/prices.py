@@ -128,7 +128,7 @@ async def get_price_history(
     venue: Optional[str] = Query(None, description="Filter by venue"),
     from_ts: Optional[int] = Query(None, description="Start timestamp (ms)"),
     to_ts: Optional[int] = Query(None, description="End timestamp (ms)"),
-    limit: int = Query(100, le=1000),
+    limit: int = Query(500, le=5000),
     db: DatabaseRepository = Depends(get_repository),
 ) -> list[dict[str, Any]]:
     del venue

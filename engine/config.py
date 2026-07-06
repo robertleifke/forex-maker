@@ -36,8 +36,11 @@ class Settings(BaseSettings):
     # Database
     db_path: str = "./data/cngn.db"
 
-    # Direct API access token (protects mutating endpoints; TG bot uses engine internals directly)
-    engine_api_token: str = Field(default="", description="Bearer token for direct API access")
+    # CORS — comma-separated list of allowed origins. Override in .env for local dev.
+    allowed_origins: str = "https://cngn.lavavc.io"
+
+    # Full-access token — Telegram bot and operator scripts only. Never expose to frontend.
+    engine_api_token: str = Field(default="", description="Bearer token for mutating API access")
 
     # Public POST /prices/refresh triggers live outbound venue fetches, so it is
     # rate-limited to at most one refresh per this interval (seconds) across all callers.
@@ -95,7 +98,8 @@ class Settings(BaseSettings):
     # Trading parameters
     target_delta_ratio: float = 0.5
     rebalance_threshold_percent: float = 5.0
-    delta_alert_threshold_percent: float = 10.0  # Alert if delta deviates >10% from target
+    delta_alert_threshold_percent: float = 10.0  # Log + record if delta deviates >10% from target
+    delta_alert_broadcast_percent: float = 25.0  # Only escalate to Telegram past this (routine deviations stay log-only)
     portfolio_delta_interval: int = 120  # Check portfolio delta every 2 minutes
 
     # Arbitrage settings

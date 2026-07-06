@@ -82,15 +82,6 @@ async def get_alerts(conn: aiosqlite.Connection, limit: int = 20) -> list[Alert]
             severity=row["severity"],
             category=row["category"],
             message=row["message"],
-            acknowledged=row["status"] != "open",
         )
         for row in rows
     ]
-
-
-async def acknowledge_alert(conn: aiosqlite.Connection, alert_id: int) -> None:
-    await conn.execute(
-        "UPDATE alerts SET status = 'acknowledged', last_seen_at_ms = ? WHERE id = ?",
-        (int(time.time() * 1000), alert_id),
-    )
-    await conn.commit()

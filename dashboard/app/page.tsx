@@ -60,7 +60,7 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const isSyncing = statusLoading || positionLoading || blendedLoading || !curveData;
+  const isSyncing = !status && !globalPosition && !blendedPrice;
   const timeSinceLastPacket = lastPacketAt ? Math.max(0, (now - lastPacketAt) / 1000).toFixed(1) : "0.0";
 
   const resolvedCurveData = curveData || {
@@ -237,7 +237,7 @@ export default function DashboardPage() {
             </div>
           </CardHeader>
           <CardContent className={`p-4 flex-1 flex flex-col justify-between z-10 ${isSyncing ? 'opacity-30' : ''}`}>
-            {isSyncing ? (
+            {isSyncing || !blendedPrice ? (
               <div className="space-y-4 pt-1">
                 <div className="flex items-center gap-3">
                   <div className="h-8 w-8 bg-white/10 rounded-sm animate-pulse" />

@@ -45,8 +45,6 @@ class PositionJobs:
             total_usdt = exposure.total_usdt
             total_usdc = exposure.total_usdc
             total_usd_value = exposure.total_usd_value
-            if total_usd_value <= 0:
-                return
 
             target = exposure.target_delta
             delta_ratio = exposure.delta_ratio
@@ -103,7 +101,12 @@ class PositionJobs:
                     f"{float(deviation_percent):.1f}% from target {float(target):.1%} "
                     f"({direction})"
                 )
-                logger.warning("portfolio_delta_alert", message=message)
+                # Routine deviations are noisy on Telegram and drown real alerts,
+                # so they stay log-only + recorded; only a massive deviation escalates to TG.
+                is_massive = (
+                    deviation_percent > self.context.config.delta_alert_broadcast_percent
+                )
+                logger.warning("portfolio_delta_alert", message=message, telegram=is_massive)
                 alert_id = await self.context.alert_store.insert_alert(
                     severity="warning",
                     category="delta",
@@ -112,7 +115,12 @@ class PositionJobs:
                 )
                 if alert_id:
                     self.context.broadcast(
-                        {"type": "alert", "severity": "warning", "message": message}
+                        {
+                            "type": "alert",
+                            "severity": "warning",
+                            "message": message,
+                            "skip_telegram": not is_massive,
+                        }
                     )
         except Exception as exc:
             logger.error("portfolio_delta_check_failed", error=str(exc))

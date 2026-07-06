@@ -18,6 +18,8 @@ RETAINED_EVENT_TYPES = {
     "venue_prices",
     "positions",
     "portfolio_delta",
+    "blended_price",
+    "engine_status",
     "account_balances",
     "system",
 }
@@ -111,7 +113,11 @@ class ConnectionManager:
 
     async def _send_retained(self, ws: WebSocket) -> None:
         for payload in self._retained_events.values():
-            await ws.send_text(payload)
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                self._connections.discard(ws)
+                return
 
     async def handle(self, ws: WebSocket) -> None:
         """Full lifecycle handler for a WebSocket connection."""

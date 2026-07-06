@@ -77,3 +77,8 @@
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.5);
 }
+
+/* Hide TradingView attribution logo from lightweight-charts */
+.tv-lightweight-charts a {
+  display: none !important;
+}

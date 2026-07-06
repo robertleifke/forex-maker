@@ -610,6 +610,10 @@ async def forward_alert(event: dict[str, Any]) -> None:
     severity = event.get("severity", "")
     if severity not in ("critical", "warning"):
         return
+    # Some events are recorded to the dashboard/alert store but deliberately
+    # kept off Telegram (e.g. routine portfolio-delta deviations).
+    if event.get("skip_telegram"):
+        return
     now = time.monotonic()
     for key, expires_at in list(_recent_alerts.items()):
         if expires_at <= now:

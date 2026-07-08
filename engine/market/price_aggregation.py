@@ -349,7 +349,7 @@ class BlendedPriceCalculator:
         confidence = self._compute_confidence(normalized, len(venue_prices))
 
         venue_price_map = {v: np.cngn_usd for v, np in normalized.items()}  # all venues for display
-        dex_volume_24h_usd = {
+        dex_volume_24h_usd: dict[str, Optional[Decimal]] = {
             venue: venue_prices[venue].volume_24h_usd
             for venue in ("uni-base", "uni-bsc")
             if venue in venue_prices

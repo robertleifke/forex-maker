@@ -660,7 +660,7 @@ def test_quidax_webhook_rejects_missing_or_unlisted_source_ip():
     app = _make_app(runtime)
 
     with TestClient(app) as client:
-        with patch.object(venue_routes.settings, "quidax_webhook_allowed_ips", "77.42.32.180"):
+        with patch.object(venue_routes.settings, "quidax_webhook_allowed_ips", "203.0.113.10"):
             # No X-Real-IP header from the edge -> fail closed.
             no_header = client.post(
                 "/api/webhooks/quidax", json={"event": "order.filled", "data": {"id": "1"}}
@@ -683,11 +683,11 @@ def test_quidax_webhook_accepts_allowed_source_ip():
     app = _make_app(runtime)
 
     with TestClient(app) as client:
-        with patch.object(venue_routes.settings, "quidax_webhook_allowed_ips", "77.42.32.180"):
+        with patch.object(venue_routes.settings, "quidax_webhook_allowed_ips", "203.0.113.10"):
             response = client.post(
                 "/api/webhooks/quidax",
                 json={"event": "order.filled", "data": {"id": "1"}},
-                headers={"X-Real-IP": "77.42.32.180"},
+                headers={"X-Real-IP": "203.0.113.10"},
             )
 
     assert response.status_code == 200

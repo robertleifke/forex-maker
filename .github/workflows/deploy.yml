@@ -1,9 +1,17 @@
 name: CI / Deploy
 
+# Tests run on GitHub-hosted runners for every PR and push to main.
+# Deployment runs ONLY when a release tag (v*) is pushed — never on a plain
+# merge to main — so shipping to prod is always a deliberate, reviewable step.
+# The deploy job is gated behind the `production` environment; add a required
+# reviewer to that environment so each release deploy needs a manual approval.
+
 on:
   pull_request:
   push:
     branches: [main]
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
@@ -22,8 +30,9 @@ jobs:
 
   deploy:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: self-hosted
+    environment: production
     permissions:
       contents: read
       packages: write

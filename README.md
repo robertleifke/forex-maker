@@ -13,7 +13,8 @@ Automated market-making engine for CNGN stablecoin across DEXs, CEXs, and wallet
 ### Quick Start
 
 ```bash
-cd cngn
+git clone https://github.com/lavavc/simple-mm.git
+cd simple-mm
 
 # Set up virtual environment
 python3 -m venv .venv
@@ -75,3 +76,39 @@ Create `dashboard/.env.local`:
 NEXT_PUBLIC_API_URL=http://localhost:8000/api
 NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
 ```
+
+---
+
+## Running with Docker
+
+A `Dockerfile` and `docker-compose.yml` are provided. Before deploying, edit
+`docker-compose.yml` and set `VIRTUAL_HOST` / `LETSENCRYPT_HOST` / `LETSENCRYPT_EMAIL`
+to your own domain and email (they ship as placeholders). Then:
+
+```bash
+cp .env.example .env      # fill in your keys
+docker compose up -d --build
+```
+
+`deploy/setup.sh` documents a full server deployment behind nginx-proxy + Let's Encrypt.
+
+## Documentation
+
+Design and operational docs live in [`dashboard/docs/`](dashboard/docs/):
+
+- [Architecture](dashboard/docs/architecture.md)
+- [Arbitrage](dashboard/docs/arbitrage/overview.md) — signal, execution, risk, post-trade
+- [Liquidity provision](dashboard/docs/lp/overview.md) — price range, inventory
+- [Runbook](dashboard/docs/runbook.md) — deployment and operations
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+## Disclaimer
+
+This software is provided for educational and research purposes only. It executes
+automated trades with real funds on live venues; running it can result in the loss
+of some or all of your capital. It is not financial advice. Use at your own risk —
+the authors accept no liability for any losses. Test thoroughly on testnets/paper
+before deploying with real money.

@@ -109,6 +109,6 @@ Released under the [MIT License](LICENSE).
 
 This software is provided for educational and research purposes only. It executes
 automated trades with real funds on live venues; running it can result in the loss
-of some or all of your capital. It is not financial advice. Use at your own risk —
+of some or all of your capital. It is not financial advice. Use at your own risk
 the authors accept no liability for any losses. Test thoroughly on testnets/paper
 before deploying with real money.

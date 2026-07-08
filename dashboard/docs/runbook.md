@@ -112,7 +112,7 @@ All other tunable parameters (arbitrage thresholds, scheduler intervals, fee est
    The engine itself stays bound to `127.0.0.1:8000`; nginx-proxy reaches it over the
    shared Docker network.
 
-3. At your DNS provider, create an **A record** for `cngn.lavavc.io` pointing to the
+3. At your DNS provider, create an **A record** for `your-domain.com` pointing to the
    server's public IP.
 
 4. Copy your `.env` to the server:

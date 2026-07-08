@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     # Database
     db_path: str = "./data/cngn.db"
 
-    # CORS — comma-separated list of allowed origins. Override in .env for local dev.
-    allowed_origins: str = "https://cngn.lavavc.io"
+    # CORS — comma-separated list of allowed origins. Set to your dashboard origin in .env.
+    allowed_origins: str = "http://localhost:3000"
 
     # Full-access token — Telegram bot and operator scripts only. Never expose to frontend.
     engine_api_token: str = Field(default="", description="Bearer token for mutating API access")
@@ -50,7 +50,9 @@ class Settings(BaseSettings):
     # restricted to known source IPs (comma-separated). The public edge (nginx-proxy)
     # overwrites X-Real-IP with the real client address, so the value cannot be spoofed
     # through the public path; see engine/api/routes/venues.py.
-    quidax_webhook_allowed_ips: str = "77.42.32.180"
+    # Empty by default (fails closed — the webhook rejects everything); set your
+    # Quidax source IP(s) in .env to enable it.
+    quidax_webhook_allowed_ips: str = ""
 
     # RPC endpoints — set ALCHEMY_KEY to use Alchemy for all chains,
     # or override individual URLs directly.

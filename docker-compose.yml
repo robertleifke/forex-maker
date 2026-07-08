@@ -14,10 +14,10 @@ services:
       HOST: "0.0.0.0"
       # Consumed by the existing nginx-proxy + acme-companion stack to generate the
       # public vhost and Let's Encrypt certificate.
-      VIRTUAL_HOST: "cngn.lavavc.io"
+      VIRTUAL_HOST: "your-domain.com"
       VIRTUAL_PORT: "8000"
-      LETSENCRYPT_HOST: "cngn.lavavc.io"
-      LETSENCRYPT_EMAIL: "andy@lavavc.io"
+      LETSENCRYPT_HOST: "your-domain.com"
+      LETSENCRYPT_EMAIL: "you@example.com"
     volumes:
       - ./data:/app/data
     networks:

@@ -5,10 +5,8 @@ on:
   push:
     branches: [main]
 
-# Image builds run on GitHub-hosted runners (ample RAM); the self-hosted runner
-# shares a 4GB box with the live engine, so building there OOM-freezes prod.
-# The self-hosted runner is used ONLY for the final deploy (pull + up), which is
-# cheap on memory.
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -22,13 +20,14 @@ jobs:
       - name: Run tests
         run: docker build --target test .
 
-  build:
+  deploy:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: read
       packages: write
+
     steps:
       - uses: actions/checkout@v6
 
@@ -48,22 +47,6 @@ jobs:
           tags: |
             ghcr.io/lavavc/automated-infra:latest
             ghcr.io/lavavc/automated-infra:${{ github.sha }}
-
-  deploy:
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: self-hosted
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deploy
         run: |

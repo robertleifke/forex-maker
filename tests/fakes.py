@@ -6,7 +6,7 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.types import LPPosition, OrderBookDepth, OrderBookLevel, Position, TxResult
+from engine.types import LPPosition, Position, TxResult
 from tests.conftest_params import make_dex_params
 from engine.venues.dex.v4 import BaseV4DexAdapter
 from engine.venues.dex.shared import PositionState
@@ -161,11 +161,13 @@ class FakeDexAdapter:
 class FakeCexAdapter:
     """In-process double for the Quidax usdtcngn market (base USDT).
 
-    Mirrors the real ``place_market_order`` return shape: executed USDT (base)
-    and avg price in cNGN per USDT. The ``buy_success`` / ``sell_success`` flags
-    are expressed in terms of the *cNGN* arb intent — acquiring cNGN maps to a
-    Quidax ``sell`` of USDT, disposing of cNGN to a Quidax ``buy`` of USDT — so
-    the flag is selected by the Quidax side the executor actually submits.
+    Mirrors the real ``place_market_order`` contract: volume is denominated per
+    side (sell → USDT to sell, buy → cNGN to spend); the return is always
+    executed USDT (base) and avg price in cNGN per USDT. The ``buy_success`` /
+    ``sell_success`` flags are expressed in terms of the *cNGN* arb intent —
+    acquiring cNGN maps to a Quidax ``sell`` of USDT, disposing of cNGN to a
+    Quidax ``buy`` of USDT — so the flag is selected by the Quidax side the
+    executor actually submits.
     """
 
     def __init__(
@@ -181,14 +183,8 @@ class FakeCexAdapter:
         self._avg_price = avg_price_cngn_per_usdt
         self.market_order_calls: list[tuple[str, Decimal]] = []
 
-    async def get_order_book_depth(self, limit: int = 50):
-        level = OrderBookLevel(price=self._avg_price, amount=Decimal("1000000"))
-        return OrderBookDepth(
-            venue="quidax", pair="cNGN/USDT", timestamp=0, bids=[level], asks=[level],
-        )
-
-    async def place_market_order(self, side: str, volume_usdt: Decimal):
-        self.market_order_calls.append((side, volume_usdt))
+    async def place_market_order(self, side: str, volume: Decimal):
+        self.market_order_calls.append((side, volume))
         # cNGN-buy intent submits a USDT "sell"; cNGN-sell intent a USDT "buy".
         intent_ok = self._buy_success if side == "sell" else self._sell_success
         if intent_ok:

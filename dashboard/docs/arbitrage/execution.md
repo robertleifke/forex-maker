@@ -22,14 +22,14 @@ The actual execution steps:
 
 ### Quidax market-order mapping (cNGN intent → usdtcngn order)
 
-The Quidax market is `usdtcngn`, so **USDT is the base asset and cNGN is the quote**, and Quidax denominates a market order's `volume` in the base asset (USDT). The arb reasons in cNGN, so `ArbitrageExecutor` translates intent → order at the venue boundary; `place_market_order` is a thin transport that submits exactly the side and USDT volume it is given.
+The Quidax market is `usdtcngn`, so **USDT is the base asset and cNGN is the quote**. Quidax denominates a market order's `volume` per side: a *sell* in the base asset (USDT to sell), a *buy* in the quote asset (cNGN to spend). This was verified against live fills on 2026-07-09 — the unit labels in Quidax's API responses are unreliable, so the fills are the source of truth. The arb reasons in cNGN, so `ArbitrageExecutor` translates intent → order at the venue boundary; `place_market_order` is a thin transport that submits exactly the side and volume it is given.
 
 | cNGN intent | Quidax side | `volume` | How sized |
 | --- | --- | --- | --- |
-| Acquire cNGN (`execute_cex_buy`, QUIDAX→DEX buy leg) | `sell` USDT (hits bids) | USDT spent | the adjusted trade size in USDT |
-| Dispose of cNGN (`execute_cex_sell`, DEX→CEX sell leg) | `buy` USDT (hits asks) | USDT to buy | walk the live ask book for `amount_cngn` — the most USDT those cNGN can buy, so cNGN spent never exceeds the buy-leg holdings |
+| Acquire cNGN (`execute_cex_buy`, QUIDAX→DEX buy leg) | `sell` USDT (hits bids) | USDT to sell (base) | the adjusted trade size in USDT |
+| Dispose of cNGN (`execute_cex_sell`, DEX→CEX sell leg) | `buy` USDT (hits asks) | cNGN to spend (quote) | `amount_cngn` passes through directly, so cNGN spent never exceeds the buy-leg holdings |
 
-Both methods return an `ArbitrageTrade` in the units the rest of the arb expects: `amount` in cNGN (`executed_usdt × avg_price`) and `price` in USD per cNGN (`1 / avg_price`), where `avg_price` is Quidax's fill price in cNGN per USDT. A cNGN quantity must never be passed straight through as `volume`: Quidax would read it as ~1600× the intended USDT and reject with *"Not enough liquidity to place market order."* The side/volume mapping is pinned in `tests/test_executor.py`.
+Both methods return an `ArbitrageTrade` in the units the rest of the arb expects: `amount` in cNGN (`executed_usdt × avg_price`) and `price` in USD per cNGN (`1 / avg_price`), where `executed_usdt` (Quidax's `executed_volume`) is always the base amount and `avg_price` is Quidax's fill price in cNGN per USDT. A USDT-sized volume must never be sent on a market buy: Quidax reads it as cNGN, ~1400× under the intended size, and rejects with error 110112 *"Price is below allowed minimum"* (the market's minimum order value — the cause of the July 2026 half-open failures). The side/volume mapping is pinned in `tests/test_executor.py`.
 
 ## DEX-DEX execution
 

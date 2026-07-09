@@ -180,6 +180,8 @@ class QuidaxAdapter(VenueAdapter):
                     "message": message,
                     "dedupe_key": dedupe_key,
                     "cooldown_s": 30,
+                    # Routine ladder maintenance — dashboard only, keep off Telegram.
+                    "skip_telegram": True,
                 }
             )
 
@@ -196,16 +198,16 @@ class QuidaxAdapter(VenueAdapter):
             return rounded_price, rounded_amount
         return price, amount
 
-    def _round_market_volume(self, volume_usdt: Decimal) -> Decimal:
-        """Quantize a market-order USDT volume to the venue's precision.
+    def _round_market_volume(self, volume: Decimal) -> Decimal:
+        """Quantize a market-order volume to the venue's precision.
 
         Quidax rejects volumes finer than the usdtcngn market step ("Price or
-        quantity precision exceeds maximum limit"). ROUND_DOWN so the cNGN spent
-        on a sell-side (buy USDT) order never exceeds buy-leg holdings.
+        quantity precision exceeds maximum limit"). ROUND_DOWN so the amount
+        spent never exceeds the caller's holdings.
         """
         if self.market == "usdtcngn":
-            return volume_usdt.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-        return volume_usdt
+            return volume.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        return volume
 
     async def _get_tracked_open_order_rows(self, live_order_ids: set[str] | None = None) -> list[dict[str, Any]]:
         return await self._order_state.get_open_order_rows(
@@ -733,26 +735,30 @@ class QuidaxAdapter(VenueAdapter):
     async def place_market_order(
         self,
         side: str,
-        volume_usdt: Decimal,
+        volume: Decimal,
     ) -> tuple[bool, Decimal, Decimal, str | None]:
         """
         Place a market order with up to 5 retries on network/5xx errors.
 
-        The configured market is ``usdtcngn`` (base USDT, quote cNGN), so Quidax
-        denominates ``volume`` in the base asset, USDT — not cNGN. Mapping a
-        cNGN-side arb intent onto the correct side and USDT volume is the
-        caller's job (see ArbitrageExecutor.execute_cex_buy/sell); this method is
-        a thin transport that submits exactly what it is given.
+        The configured market is ``usdtcngn`` (base USDT, quote cNGN). Quidax
+        denominates a market order's ``volume`` per side: a *sell* is sized in
+        the base asset (USDT to sell), a *buy* in the quote asset (cNGN to
+        spend) — verified against live fills 2026-07-09; the unit labels in
+        their API responses are unreliable. Mapping a cNGN-side arb intent onto
+        the correct side and denomination is the caller's job (see
+        ArbitrageExecutor.execute_cex_buy/sell); this method is a thin
+        transport that submits exactly what it is given.
 
         Args:
-            side: Literal Quidax side — "buy" buys USDT (pays cNGN),
-                "sell" sells USDT (receives cNGN)
-            volume_usdt: Order volume in USDT (the base asset)
+            side: Literal Quidax side — "buy" buys USDT (volume = cNGN to spend),
+                "sell" sells USDT (volume = USDT to sell)
+            volume: Order volume, denominated per `side` as above
         Returns:
-            (success, executed_usdt, avg_price_cngn_per_usdt, error)
+            (success, executed_usdt, avg_price_cngn_per_usdt, error) —
+            executed volume is always the base (USDT) amount regardless of side
         """
         client = await self._get_client()
-        submit_volume = self._round_market_volume(volume_usdt)
+        submit_volume = self._round_market_volume(volume)
         payload = {"market": self.market, "side": side, "ord_type": "market", "volume": str(submit_volume)}
         last_error: str | None = None
 
@@ -816,7 +822,7 @@ class QuidaxAdapter(VenueAdapter):
                 price_data = data.get("avg_price", "0")
                 avg_price = Decimal(str(price_data.get("amount", "0") if isinstance(price_data, dict) else price_data))
 
-                logger.debug("market_order_placed", side=side, volume_usdt=float(volume_usdt), attempt=attempt)
+                logger.debug("market_order_placed", side=side, volume=float(volume), attempt=attempt)
                 return True, executed_usdt, avg_price, None
                 
             except Exception as e:

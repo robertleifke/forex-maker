@@ -5,7 +5,6 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 from engine.types import TxResult, PriceQuote
-from engine.arb.detection.cex_dex import QUIDAX_FEE
 from engine.arb.execution.executor import ArbitrageExecutor
 from tests.fakes import FakeCexAdapter, FakeDexAdapter
 
@@ -119,22 +118,19 @@ class TestExecuteCexSell:
         assert trade.status == "failed"
 
     @pytest.mark.asyncio
-    async def test_disposing_cngn_buys_usdt_volume_sized_to_book(self):
-        """Selling cNGN is a USDT *buy* sized in USDT, not the raw cNGN quantity.
+    async def test_disposing_cngn_buys_usdt_with_volume_in_cngn(self):
+        """Selling cNGN is a USDT *buy* whose volume is the cNGN to spend.
 
-        Regression for the half-open CEX-DEX failures: passing the cNGN amount
-        straight through as `volume` made Quidax read it as ~1639x too much USDT
-        and reject with "Not enough liquidity to place market order."
+        Quidax denominates market-buy volume in the quote asset (cNGN), unlike
+        market sells (base USDT) — verified against live fills 2026-07-09.
+        Regression for the July 2026 half-open failures: sizing the volume in
+        USDT (~$200) made Quidax read it as ~200 cNGN, under the market's
+        minimum order value, rejecting every sell leg with 110112
+        "Price is below allowed minimum".
         """
         cex = FakeCexAdapter(sell_success=True)
         executor = ArbitrageExecutor(venues={"quidax": cex})
         amount_cngn = Decimal("800000")
         await executor.execute_cex_sell("quidax", amount_cngn, Decimal("0.000610"), "opp-1")
 
-        assert len(cex.market_order_calls) == 1
-        side, volume_usdt = cex.market_order_calls[0]
-        assert side == "buy"
-        # Volume must be USDT (~488), never the raw cNGN quantity (800000).
-        assert volume_usdt < amount_cngn / Decimal("1000")
-        expected_usdt = amount_cngn / Decimal("1639.34") * (Decimal(1) - QUIDAX_FEE)
-        assert abs(volume_usdt - expected_usdt) < Decimal("0.01")
+        assert cex.market_order_calls == [("buy", amount_cngn)]

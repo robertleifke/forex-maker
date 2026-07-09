@@ -7,7 +7,6 @@ from typing import Any, Optional
 
 import structlog
 
-from engine.arb.detection.cex_dex import QUIDAX_FEE, walk_orderbook_asks
 from engine.types import ArbitrageTrade
 from engine.venues.base import VenueAdapter, is_dex_execution_venue
 from engine.venues.cex.quidax import QuidaxAdapter
@@ -241,25 +240,19 @@ class ArbitrageExecutor:
         """Dispose of `amount_cngn` cNGN on a CEX for USDT.
 
         The Quidax market is ``usdtcngn`` (base USDT), so dumping cNGN means
-        *buying* USDT off the ask side, paid for in cNGN. Quidax denominates the
-        order ``volume`` in USDT, so we size it by walking the live ask book for
-        `amount_cngn`: the most USDT those cNGN can buy. This guarantees the cNGN
-        actually spent never exceeds the holdings produced by the buy leg, which
-        is why a cNGN quantity must never be passed straight through as `volume`.
+        *buying* USDT off the ask side, paid for in cNGN. Quidax denominates a
+        market-buy ``volume`` in the quote asset — the cNGN to spend — so
+        `amount_cngn` passes through as the volume directly, which also
+        guarantees the cNGN spent never exceeds the buy-leg holdings.
+        (Verified against live orders 2026-07-09: a volume-10000 market buy
+        consumed exactly 10,000 cNGN; USDT-sized volumes were rejected with
+        110112 "Price is below allowed minimum" because ~200 was read as
+        200 cNGN, under the market's minimum order value.)
         """
         venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
 
-        depth = await venue.get_order_book_depth()
-        if depth is None or not depth.asks:
-            return ArbitrageTrade(
-                id=0, opportunity_id=opportunity_id, venue=venue_name, side="sell",
-                amount=amount_cngn, price=price_usd_per_cngn, status="failed",
-                timestamp=_now_ms(), error="No Quidax ask depth to size market buy",
-            )
-        usdt_volume, _ = walk_orderbook_asks(depth.asks, amount_cngn, QUIDAX_FEE)
-
         success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.place_market_order(
-            "buy", usdt_volume
+            "buy", amount_cngn
         )
         if success and avg_price_cngn_per_usdt > 0:
             executed_cngn = executed_usdt * avg_price_cngn_per_usdt

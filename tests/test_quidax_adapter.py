@@ -346,8 +346,8 @@ async def test_sync_order_ladder_skips_during_requote_cooldown():
 
 
 @pytest.mark.asyncio
-async def test_sync_order_ladder_broadcasts_warning_when_anchor_move_requotes():
-    """A requote triggered by anchor drift must alert operators via both alert_store and broadcast."""
+async def test_sync_order_ladder_anchor_move_requote_alerts_dashboard_only():
+    """An anchor-drift requote alerts the dashboard but is kept off Telegram."""
     alerts = SimpleNamespace(insert_alert=AsyncMock(return_value=1))
     broadcasts: list[dict[str, object]] = []
     adapter = _make_adapter(
@@ -420,6 +420,7 @@ async def test_sync_order_ladder_broadcasts_warning_when_anchor_move_requotes():
         "message": alert_kwargs["message"],
         "dedupe_key": alert_kwargs["dedupe_key"],
         "cooldown_s": 30,
+        "skip_telegram": True,
     }
 
 

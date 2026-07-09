@@ -180,6 +180,8 @@ class QuidaxAdapter(VenueAdapter):
                     "message": message,
                     "dedupe_key": dedupe_key,
                     "cooldown_s": 30,
+                    # Routine ladder maintenance — dashboard only, keep off Telegram.
+                    "skip_telegram": True,
                 }
             )
 

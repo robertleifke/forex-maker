@@ -67,6 +67,19 @@ On sell-leg failure the engine:
 
 **CEX-DEX recovery:** The `/recover` command routes based on which leg is the CEX. For directions where the buy was on Quidax and the DEX sell failed (Case A), recovery sells the cNGN back on Quidax. For directions where the buy was on a DEX and the Quidax sell failed (Case B), recovery sells the cNGN back on the buy-side DEX. In both cases the stored `buy_amount_cngn` is used for the same reason as above. The Quidax `place_market_order` already retries internally five times before returning failure, so by the time a Case B half-open is recorded all retries are exhausted.
 
+## Broadcast-but-unconfirmed transactions
+
+A live swap whose receipt never arrives within the 120 s wait (RPC timeout, network stress) is **not** a failure — the transaction is on the network and may still land. `_send_transaction` distinguishes the two cases: an error *before* broadcast returns `status="failed"` with no hash (the only hashless failure); an error *after* broadcast does one direct receipt check and, if the tx is still unresolved, returns `status="pending"` with the real hash. A broadcast hash is never discarded.
+
+A pending leg routes into the half-open flow with the hash persisted (`buy_tx_hash` / `sell_tx_hash`):
+
+- **Pending buy** — the sell is not attempted (it would trade against unknown funds); the opportunity goes half-open with the estimated `buy_amount_cngn` for recovery sizing.
+- **Pending sell** — the opportunity goes half-open with `sell_tx_hash` recorded. Recovery then resolves that hash on-chain via `check_transaction` before acting: a confirmed receipt completes the trade with the receipt-parsed output (`method: "sell_landed"`); a reverted receipt falls through to normal retry/reversal; no receipt makes `/recover` refuse — retrying while the original sell can still land would sell the same inventory twice. Wait for the tx to confirm or drop, then re-run `/recover`.
+
+This applies to both pipelines: for CEX-DEX a late-landing DEX sell plus a CEX reversal would leave the book net short cNGN, so the same on-chain resolution gate runs before the reversal. Pinned in `tests/test_send_transaction.py`, `tests/test_dex_dex_execution.py` (`TestUnconfirmedTransactions`), and `tests/test_cex_dex_execution.py` (`TestCexDexUnconfirmedSell`).
+
+Resolution is operator-triggered only: nothing sweeps pending or half-open opportunities on startup or on a timer, and the on-chain `check_transaction` lookup runs only inside `/recover`. A pending leg therefore sits until an operator acts — a deliberate tradeoff, mitigated by the circuit breaker (trading is already halted) and the critical alert carrying the `/recover` command. Same operational model half-open trades have always had.
+
 ## Circuit breaker
 
 `consecutive_failures >= max_consecutive_failures` (default 3) activates the circuit breaker, blocking all further trading. Any half-open trade also trips it immediately regardless of the failure count. Reset via `/reset_breaker` in the Telegram bot.

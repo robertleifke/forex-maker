@@ -262,6 +262,7 @@ class ArbitrageOpportunity(BaseModel):
     reason: Optional[str] = None  # Why it was abandoned/expired
     buy_amount_cngn: Optional[Decimal] = None
     buy_tx_hash: Optional[str] = None
+    sell_tx_hash: Optional[str] = None
 
 
 class DexArbOpportunity(BaseModel):

@@ -9,10 +9,40 @@ from typing import Any
 import structlog
 
 from engine.arb.routing.route_registry import ROUTES, ROUTES_BY_DIRECTION
-from engine.venues.base import is_dex_execution_venue
+from engine.types import TxResult
+from engine.venues.base import DexExecutionVenue, is_dex_execution_venue
 
 
 logger = structlog.get_logger()
+
+
+async def _resolve_recorded_sell(sell_venue: DexExecutionVenue, sell_tx_hash: str) -> TxResult:
+    """Resolve a previously broadcast sell on-chain before recovery acts.
+
+    Raises while no receipt exists: the tx may still land, so retrying or
+    reversing now could execute the sell twice.
+    """
+    loop = asyncio.get_running_loop()
+    sell_result = await loop.run_in_executor(
+        None, sell_venue.check_transaction, sell_tx_hash, sell_venue.stable_address
+    )
+    if sell_result is None:
+        raise ValueError(
+            f"sell tx {sell_tx_hash} is broadcast but unconfirmed; recovering now could "
+            f"execute the sell twice — wait for it to confirm or drop, then re-run /recover"
+        )
+    return sell_result
+
+
+def _confirmed_sell_usd_out(
+    sell_venue: DexExecutionVenue, sell_result: TxResult, sell_tx_hash: str
+) -> Decimal:
+    if sell_result.output_raw is None:
+        raise ValueError(
+            f"sell tx {sell_tx_hash} confirmed on-chain but its swap output "
+            f"could not be parsed — record the outcome manually"
+        )
+    return Decimal(sell_result.output_raw) / Decimal(10 ** sell_venue.stable_decimals)
 
 
 async def recover_dex_half_open(engine: Any, opp_id: str) -> dict[str, Any]:
@@ -51,6 +81,56 @@ async def _recover_dex_half_open_inner(engine: Any, opp_id: str) -> dict[str, An
             f"Cannot recover {opp_id}: buy_amount_cngn not recorded "
             f"(old record — check buy tx {opp.buy_tx_hash} manually)"
         )
+
+    # A recorded sell hash means a sell was already broadcast whose outcome was
+    # unknown when the trade went half-open — resolve it on-chain before any
+    # retry can sell the same inventory twice.
+    if opp.sell_tx_hash and is_dex_execution_venue(sell_venue):
+        sell_result = await _resolve_recorded_sell(sell_venue, opp.sell_tx_hash)
+        if sell_result.status == "confirmed":
+            usd_out = _confirmed_sell_usd_out(sell_venue, sell_result, opp.sell_tx_hash)
+            cost_basis = opp.executed_size_usd if opp.executed_size_usd is not None else opp.optimal_size_usd
+            actual_profit = usd_out - cost_basis
+            reason = "Recovered: sell landed on-chain"
+            await arbitrage_store.update_dex_arbitrage_execution_state(
+                opp_id,
+                status="completed",
+                sell_tx_hash=opp.sell_tx_hash,
+                reason=reason,
+                actual_profit_usd=float(actual_profit),
+            )
+            engine.inventory.record_trade_complete(opp_id, cost_basis, actual_profit, Decimal("0"))
+            await engine.history.record_executed_raw(
+                opp_id=opp_id,
+                pipeline="dex_dex",
+                direction=opp.direction,
+                buy_venue=buy_venue_name,
+                sell_venue=sell_venue_name,
+                optimal_size_usd=opp.optimal_size_usd,
+                routed_size_usd=cost_basis,
+                executed_size_usd=cost_basis,
+                expected_profit_usd=opp.expected_profit_usd,
+                net_spread_bps=opp.net_spread_bps,
+                actual_profit_usd=actual_profit,
+                reason=reason,
+                buy_tx_hash=opp.buy_tx_hash,
+                sell_tx_hash=opp.sell_tx_hash,
+            )
+            logger.info(
+                "dex_dex_recovery_completed",
+                opp_id=opp_id,
+                method="sell_landed",
+                sell_tx_hash=opp.sell_tx_hash,
+                profit_usd=float(actual_profit),
+            )
+            return {
+                "status": "completed",
+                "method": "sell_landed",
+                "opp_id": opp_id,
+                "sell_tx_hash": opp.sell_tx_hash,
+                "profit_usd": float(actual_profit),
+            }
+        # Reverted on-chain — the sell definitively failed; normal recovery below.
 
     can_retry_sell = False
     if is_dex_execution_venue(sell_venue):
@@ -222,6 +302,56 @@ async def recover_cex_half_open(engine: Any, opp_id: str) -> dict[str, Any]:
                 f"Cannot recover {opp_id}: buy_amount_cngn not recorded "
                 f"(old record — check buy tx {opp.buy_tx_hash} manually)"
             )
+
+        # Same double-execution guard as DEX-DEX: a recorded DEX sell hash must
+        # be resolved on-chain before reversing the buy, or a late-landing sell
+        # plus the reversal would leave the book net short cNGN.
+        sell_is_cex = cex_route_def.sell_leg.leg_type == "api"
+        if opp.sell_tx_hash and not sell_is_cex:
+            sell_venue = engine.venues[sell_venue_name]
+            if not is_dex_execution_venue(sell_venue):
+                raise TypeError(f"{sell_venue_name} is not a DEX execution venue")
+            sell_result = await _resolve_recorded_sell(sell_venue, opp.sell_tx_hash)
+            if sell_result.status == "confirmed":
+                usd_out = _confirmed_sell_usd_out(sell_venue, sell_result, opp.sell_tx_hash)
+                actual_profit = usd_out - opp.recommended_size_usd
+                reason = "Recovered: sell landed on-chain"
+                await arbitrage_store.update_arbitrage_opportunity(
+                    opp_id,
+                    status="completed",
+                    actual_profit_usd=float(actual_profit),
+                    reason=reason,
+                )
+                engine.inventory.record_trade_complete(opp_id, opp.recommended_size_usd, actual_profit, Decimal("0"))
+                await engine.history.record_executed_raw(
+                    opp_id=opp_id,
+                    pipeline="cex_dex",
+                    direction=cex_direction,
+                    buy_venue=opp.buy_venue,
+                    sell_venue=opp.sell_venue,
+                    optimal_size_usd=opp.recommended_size_usd,
+                    routed_size_usd=opp.recommended_size_usd,
+                    executed_size_usd=opp.recommended_size_usd,
+                    expected_profit_usd=opp.expected_profit_usd,
+                    net_spread_bps=opp.net_spread_bps,
+                    actual_profit_usd=actual_profit,
+                    reason=reason,
+                    buy_tx_hash=opp.buy_tx_hash,
+                    sell_tx_hash=opp.sell_tx_hash,
+                )
+                logger.info(
+                    "cex_dex_recovery_completed",
+                    opp_id=opp_id,
+                    method="sell_landed",
+                    profit_usd=float(actual_profit),
+                )
+                return {
+                    "status": "completed",
+                    "method": "sell_landed",
+                    "opp_id": opp_id,
+                    "profit_usd": float(actual_profit),
+                }
+            # Reverted on-chain — the sell definitively failed; reverse the buy.
 
         return await _reverse_cex_recovery(engine, arbitrage_store, opp_id, opp, cex_direction, buy_is_cex, buy_amount_cngn)
     finally:

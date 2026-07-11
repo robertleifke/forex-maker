@@ -121,6 +121,9 @@ class FakeDexAdapter:
     def simulate_swap(self, token_in: str, amount_in: int, min_out: int) -> None:
         return None
 
+    def check_transaction(self, tx_hash: str, output_token: str | None = None) -> TxResult | None:
+        return None
+
     async def ensure_trade_approvals(self) -> None:
         return None
 

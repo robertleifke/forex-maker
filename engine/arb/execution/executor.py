@@ -147,7 +147,7 @@ class ArbitrageExecutor:
             amount=actual_cngn,
             price=current_price,
             tx_hash=result.hash or None,
-            status="confirmed" if result.status == "confirmed" else "failed",
+            status=result.status,
             timestamp=_now_ms(),
             error=_clean_revert(result.error),
         )
@@ -188,7 +188,7 @@ class ArbitrageExecutor:
             price=fill_price,
             usd_out=actual_stable_out,
             tx_hash=result.hash or None,
-            status="confirmed" if result.status == "confirmed" else "failed",
+            status=result.status,
             timestamp=_now_ms(),
             error=_clean_revert(result.error),
         )

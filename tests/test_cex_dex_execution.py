@@ -32,7 +32,7 @@ def _params():
 class FakeV4Venue:
     """DEX venue double for CEX-DEX sell-leg tests."""
 
-    def __init__(self, name, sim_result=None, swap_ok=True):
+    def __init__(self, name, sim_result=None, swap_ok=True, swap_pending=False, check_result=None):
         self.name = name
         self.stable_address = "0xstable"
         self.cngn_address = "0xcngn"
@@ -43,15 +43,24 @@ class FakeV4Venue:
         self.cngn_token = SimpleNamespace(functions=SimpleNamespace(balanceOf=lambda _address: SimpleNamespace(call=lambda: 0)))
         self._sim_result = sim_result
         self._swap_ok = swap_ok
+        self._swap_pending = swap_pending  # broadcast succeeded, receipt never arrived
+        self._check_result = check_result  # None = no receipt yet
         self.sim_calls = []
         self.swap_calls = []
+        self.check_calls = []
 
     def simulate_swap(self, token_in, amount_in, min_out):
         self.sim_calls.append((token_in, amount_in, min_out))
         return self._sim_result
 
+    def check_transaction(self, tx_hash, output_token=None):
+        self.check_calls.append((tx_hash, output_token))
+        return self._check_result
+
     async def swap(self, token_in, amount_in, min_out):
         self.swap_calls.append((token_in, amount_in, min_out))
+        if self._swap_pending:
+            return TxResult(hash="0xpendingtx", status="pending", error="broadcast but unconfirmed: timeout")
         if self._swap_ok:
             return TxResult(hash="0xselltx", status="confirmed", output_raw=amount_in)
         return TxResult(hash="", status="failed", error="execution reverted: SWAP_FAILED")
@@ -263,6 +272,51 @@ class TestCexDexPreflightGate:
         opp = await test_db.arbitrage.get_arbitrage_opportunity("opp-cex-profit-zero")
         assert opp is not None
         assert opp.expected_profit_usd == Decimal("0")
+
+# =============================================================================
+# Broadcast-but-unconfirmed DEX sell (CEX-DEX pipeline)
+# =============================================================================
+
+class TestCexDexUnconfirmedSell:
+    @pytest.mark.asyncio
+    async def test_pending_dex_sell_goes_half_open_with_sell_tx_hash(self, test_db):
+        """A DEX sell that timed out waiting for its receipt is not a failure — the
+        opportunity goes half-open with both hashes persisted."""
+        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_pending=True)
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts = _make_engine(venues, test_db)
+        route = _cex_dex_route()
+        opp_id = "opp-cex-pending-sell"
+        await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id)
+
+        opp = await test_db.arbitrage.get_arbitrage_opportunity(opp_id)
+        assert opp is not None
+        assert opp.status == "half_open"
+        assert opp.sell_tx_hash == "0xpendingtx"
+        assert engine.inventory._state.circuit_breaker_active
+
+    @pytest.mark.asyncio
+    async def test_recover_refuses_while_dex_sell_unconfirmed(self, test_db):
+        """Reversing the CEX buy while the DEX sell can still land would leave the
+        book net short cNGN — recovery must refuse until the tx resolves."""
+        sell_venue = FakeV4Venue("uni-base", sim_result=None, swap_pending=True)
+        cex_venue = FakeCexVenue(buy_ok=True)
+        venues = {"quidax": cex_venue, "uni-base": sell_venue}
+
+        engine, alerts = _make_engine(venues, test_db)
+        route = _cex_dex_route()
+        opp_id = "opp-cex-pending-recover"
+        await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id)
+        cex_venue.buy_calls.clear()
+
+        with pytest.raises(ValueError, match="sell twice"):
+            await engine.recover_cex_half_open(opp_id)
+
+        assert cex_venue.buy_calls == [], "no CEX reversal while the DEX sell may still land"
+        assert sell_venue.check_calls[-1] == ("0xpendingtx", sell_venue.stable_address)
+
 
 # =============================================================================
 # Issue 6: _clean_revert tests

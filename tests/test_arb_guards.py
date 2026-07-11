@@ -67,6 +67,9 @@ class _FakeV4Venue:
         self.sim_calls.append((token_in, amount_in, min_out))
         return self._sim_result
 
+    def check_transaction(self, tx_hash, output_token=None):
+        return None
+
     async def swap(self, token_in, amount_in, min_out):
         if self._swap_ok:
             return TxResult(hash="0xtx", status="confirmed", output_raw=amount_in)

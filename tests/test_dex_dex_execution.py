@@ -46,7 +46,7 @@ def _params():
 class FakeV4Venue:
     """Minimal venue double for DEX-DEX execution tests."""
 
-    def __init__(self, name, sim_result=None, swap_ok=True):
+    def __init__(self, name, sim_result=None, swap_ok=True, swap_pending=False, check_result=None):
         self.name = name
         self.stable_address = "0xstable"
         self.cngn_address = "0xcngn"
@@ -57,15 +57,24 @@ class FakeV4Venue:
         self.cngn_token = SimpleNamespace(functions=SimpleNamespace(balanceOf=lambda _address: SimpleNamespace(call=lambda: 0)))
         self._sim_result = sim_result   # None = passes, str = error message
         self._swap_ok = swap_ok
+        self._swap_pending = swap_pending  # broadcast succeeded, receipt never arrived
+        self._check_result = check_result  # None = no receipt yet
         self.swap_calls = []
         self.sim_calls = []
+        self.check_calls = []
 
     def simulate_swap(self, token_in, amount_in, min_out):
         self.sim_calls.append((token_in, amount_in, min_out))
         return self._sim_result
 
+    def check_transaction(self, tx_hash, output_token=None):
+        self.check_calls.append((tx_hash, output_token))
+        return self._check_result
+
     async def swap(self, token_in, amount_in, min_out):
         self.swap_calls.append((token_in, amount_in, min_out))
+        if self._swap_pending:
+            return TxResult(hash="0xpendingtx", status="pending", error="broadcast but unconfirmed: timeout")
         if self._swap_ok:
             # Buy leg (stable→cNGN): return a realistic cNGN output matching the pool estimate.
             # Sell leg (cNGN→stable): echo back the input as stable output.
@@ -365,3 +374,119 @@ class TestRecovery:
         engine, alerts = _make_engine(venues, test_db)
         with pytest.raises(ValueError, match="not recoverable"):
             await engine.recover_dex_half_open(opp_id)
+
+
+# =============================================================================
+# 4. Broadcast-but-unconfirmed transactions
+# =============================================================================
+
+class TestUnconfirmedTransactions:
+    """A tx that was broadcast but timed out waiting for its receipt must never
+    be laundered into 'never happened' — it goes half-open with its hash, and
+    recovery resolves it on-chain before selling anything."""
+
+    @pytest.mark.asyncio
+    async def test_pending_sell_goes_half_open_with_sell_tx_hash(self, test_db):
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_pending=True)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        engine, alerts = _make_engine(venues, test_db)
+        opp_id = "opp-pending-sell-1"
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
+
+        opp = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
+        assert opp.status == "half_open"
+        assert opp.sell_tx_hash == "0xpendingtx"
+        assert "unconfirmed" in opp.reason
+        assert engine.inventory._state.circuit_breaker_active
+
+    @pytest.mark.asyncio
+    async def test_pending_buy_goes_half_open_not_abandoned(self, test_db):
+        """A pending buy may have moved funds — it must never be recorded as a no-trade."""
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_pending=True)
+        sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_ok=True)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        engine, alerts = _make_engine(venues, test_db)
+        opp_id = "opp-pending-buy-1"
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="detected"))
+        await engine._execute_route(ROUTES_BY_DIRECTION[_route().candidate.direction], _route(), opp_id)
+
+        assert sell_venue.swap_calls == [], "sell must not run against an unconfirmed buy"
+        opp = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
+        assert opp.status == "half_open"
+        assert opp.buy_tx_hash == "0xpendingtx"
+        assert opp.buy_amount_cngn is not None, "recovery sizing must be persisted"
+        assert engine.inventory._state.circuit_breaker_active
+
+    @pytest.mark.asyncio
+    async def test_recover_refuses_while_sell_unconfirmed(self, test_db):
+        """The double-sell repro: the broadcast sell is still in flight, the wallet
+        balance is untouched, so the preflight would pass — recovery must refuse
+        instead of selling the same inventory twice."""
+        sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_ok=True, check_result=None)
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        opp_id = "opp-pending-recover-1"
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="half_open"))
+        await test_db.arbitrage.update_dex_arbitrage_execution_state(
+            opp_id, status="half_open", buy_amount_cngn=Decimal("798000"), sell_tx_hash="0xpendingtx",
+        )
+
+        engine, alerts = _make_engine(venues, test_db)
+        with pytest.raises(ValueError, match="sell twice"):
+            await engine.recover_dex_half_open(opp_id)
+
+        assert sell_venue.swap_calls == [], "no retry sell while the original may still land"
+        assert buy_venue.swap_calls == [], "no reversal while the original may still land"
+        assert sell_venue.check_calls == [("0xpendingtx", sell_venue.stable_address)]
+
+    @pytest.mark.asyncio
+    async def test_recover_completes_when_pending_sell_landed(self, test_db):
+        """If the broadcast sell confirmed on-chain, recovery records the outcome
+        instead of trading again."""
+        landed = TxResult(hash="0xpendingtx", status="confirmed", gas_used=90000, output_raw=501_000_000)
+        sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_ok=True, check_result=landed)
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        opp_id = "opp-pending-recover-2"
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="half_open"))
+        await test_db.arbitrage.update_dex_arbitrage_execution_state(
+            opp_id, status="half_open", buy_amount_cngn=Decimal("798000"), sell_tx_hash="0xpendingtx",
+        )
+
+        engine, alerts = _make_engine(venues, test_db)
+        result = await engine.recover_dex_half_open(opp_id)
+
+        assert result["method"] == "sell_landed"
+        assert result["status"] == "completed"
+        assert sell_venue.swap_calls == []
+        assert buy_venue.swap_calls == []
+        done = await test_db.arbitrage.get_dex_arbitrage_opportunity(opp_id)
+        assert done.status == "completed"
+        # 501 USD out (output_raw at 6 decimals) against the 500 USD cost basis.
+        assert done.actual_profit_usd == Decimal("1")
+
+    @pytest.mark.asyncio
+    async def test_recover_retries_after_pending_sell_reverted(self, test_db):
+        """A reverted receipt is a definitive failure — normal retry recovery applies."""
+        reverted = TxResult(hash="0xpendingtx", status="failed", gas_used=90000)
+        sell_venue = FakeV4Venue("uni-bsc", sim_result=None, swap_ok=True, check_result=reverted)
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        venues = {"uni-base": buy_venue, "uni-bsc": sell_venue}
+
+        opp_id = "opp-pending-recover-3"
+        await test_db.arbitrage.insert_dex_arbitrage_opportunity(_make_opp(opp_id, status="half_open"))
+        await test_db.arbitrage.update_dex_arbitrage_execution_state(
+            opp_id, status="half_open", buy_amount_cngn=Decimal("798000"), sell_tx_hash="0xpendingtx",
+        )
+
+        engine, alerts = _make_engine(venues, test_db)
+        result = await engine.recover_dex_half_open(opp_id)
+
+        assert result["method"] == "retry_sell"
+        assert len(sell_venue.swap_calls) == 1

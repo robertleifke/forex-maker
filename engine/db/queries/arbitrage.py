@@ -29,6 +29,7 @@ def _cex_opp_from_row(row: aiosqlite.Row) -> ArbitrageOpportunity:
         reason=row["reason"],
         buy_amount_cngn=coerce_decimal(row["buy_amount_cngn"]),
         buy_tx_hash=row["buy_tx_hash"],
+        sell_tx_hash=row["sell_tx_hash"],
     )
 
 
@@ -70,8 +71,8 @@ async def upsert_cex_attempt(
             id, pipeline, direction, buy_venue, sell_venue, detected_at_ms, updated_at_ms,
             status, reason, signal_price_buy, signal_price_sell, gross_spread_bps,
             net_spread_bps, expected_profit_usd, actual_profit_usd, optimal_size_usd,
-            buy_amount_cngn, buy_tx_hash, engine_key
-        ) VALUES (?, 'cex_dex', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            buy_amount_cngn, buy_tx_hash, sell_tx_hash, engine_key
+        ) VALUES (?, 'cex_dex', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             updated_at_ms = excluded.updated_at_ms,
             status = excluded.status,
@@ -85,6 +86,7 @@ async def upsert_cex_attempt(
             optimal_size_usd = excluded.optimal_size_usd,
             buy_amount_cngn = COALESCE(excluded.buy_amount_cngn, arb_attempts.buy_amount_cngn),
             buy_tx_hash = COALESCE(excluded.buy_tx_hash, arb_attempts.buy_tx_hash),
+            sell_tx_hash = COALESCE(excluded.sell_tx_hash, arb_attempts.sell_tx_hash),
             engine_key = COALESCE(excluded.engine_key, arb_attempts.engine_key)
         """,
         (
@@ -105,6 +107,7 @@ async def upsert_cex_attempt(
             float(opp.recommended_size_usd),
             float(opp.buy_amount_cngn) if opp.buy_amount_cngn is not None else None,
             opp.buy_tx_hash,
+            opp.sell_tx_hash,
             engine_key,
         ),
     )
@@ -120,6 +123,7 @@ async def update_cex_attempt(
     reason: str | None = None,
     buy_amount_cngn: float | None = None,
     buy_tx_hash: str | None = None,
+    sell_tx_hash: str | None = None,
 ) -> None:
     updates = ["status = ?", "updated_at_ms = ?"]
     params: list[Any] = [status, int(time.time() * 1000)]
@@ -135,6 +139,9 @@ async def update_cex_attempt(
     if buy_tx_hash is not None:
         updates.append("buy_tx_hash = ?")
         params.append(buy_tx_hash)
+    if sell_tx_hash is not None:
+        updates.append("sell_tx_hash = ?")
+        params.append(sell_tx_hash)
     params.append(opp_id)
     await conn.execute(
         f"UPDATE arb_attempts SET {', '.join(updates)} WHERE id = ? AND pipeline = 'cex_dex'",

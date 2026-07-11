@@ -230,6 +230,12 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                 executed_size_usd=float(size_usd),
             )
 
+        if buy_trade.status == "pending":
+            # Buy broadcast but unconfirmed — it may still land. Selling now
+            # would trade against unknown funds; go half-open instead so the
+            # persisted buy_tx_hash and buy_amount_cngn drive recovery.
+            raise RuntimeError(f"buy broadcast but unconfirmed (tx {buy_trade.tx_hash}): {buy_trade.error}")
+
         if sell_is_cex:
             sell_trade = await engine.executor.execute_cex_sell(
                 sell_venue_name,
@@ -253,8 +259,12 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                 opp_id,
             )
 
-        if not sell_trade or sell_trade.status == "failed":
+        if not sell_trade or sell_trade.status in ("failed", "pending"):
             sell_tx_hash = sell_trade.tx_hash if sell_trade else None
+            if sell_trade and sell_trade.status == "pending":
+                # Sell broadcast but unconfirmed — persist the hash so recovery
+                # resolves it on-chain instead of blindly selling again.
+                raise RuntimeError(f"sell broadcast but unconfirmed (tx {sell_tx_hash}): {sell_trade.error}")
             raise RuntimeError((sell_trade.error if sell_trade else None) or "sell failed")
 
         if buy_is_cex or sell_is_cex:
@@ -313,6 +323,7 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                     reason=f"HALF_OPEN:{buy_tx}:{e}",
                     buy_amount_cngn=float(buy_trade.amount),
                     buy_tx_hash=buy_tx or None,
+                    sell_tx_hash=sell_tx_hash,
                 )
                 alert_msg = (
                     f"Half-open CEX-DEX arb {opp_id} ({direction}): "
@@ -329,6 +340,7 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
                     opp_id,
                     status="half_open",
                     buy_tx_hash=buy_tx or None,
+                    sell_tx_hash=sell_tx_hash,
                     reason=err,
                 )
                 alert_msg = (

@@ -9,7 +9,9 @@ from typing import Any, Optional, Literal
 import structlog
 from eth_abi import encode  # type: ignore[attr-defined]
 from eth_account.signers.local import LocalAccount
+from eth_typing import HexStr
 from web3 import Web3
+from web3.exceptions import TransactionNotFound
 from web3.middleware import geth_poa_middleware  # type: ignore[attr-defined]
 from web3.types import BlockData, Nonce, TxParams, TxReceipt, Wei
 
@@ -450,6 +452,37 @@ class BaseV4DexAdapter(VenueAdapter):
             return abs(amount1) if amount1 < 0 else None
         return None
 
+    def _receipt_to_result(
+        self,
+        tx_hash_str: str,
+        receipt: TxReceipt,
+        *,
+        output_token: str | None = None,
+        parse_token_id: bool = False,
+    ) -> TxResult:
+        status: Literal["confirmed", "failed"] = "confirmed" if receipt["status"] == 1 else "failed"
+        output_raw = self._parse_swap_output_raw(receipt, output_token) if output_token and status == "confirmed" else None
+        token_id = self._parse_mint_token_id(receipt) if parse_token_id and status == "confirmed" else None
+        return TxResult(
+            hash=tx_hash_str,
+            status=status,
+            gas_used=receipt["gasUsed"],
+            output_raw=output_raw,
+            token_id=token_id,
+        )
+
+    def check_transaction(self, tx_hash: str, output_token: str | None = None) -> TxResult | None:
+        """Look up a previously broadcast transaction by hash.
+
+        Returns None while no receipt exists (still pending, or dropped from
+        the mempool); otherwise a confirmed/failed TxResult with parsed output.
+        """
+        try:
+            receipt: TxReceipt = self.w3.eth.get_transaction_receipt(HexStr(tx_hash))
+        except TransactionNotFound:
+            return None
+        return self._receipt_to_result(tx_hash, receipt, output_token=output_token)
+
     async def _send_transaction(
         self,
         tx: TxParams,
@@ -466,31 +499,46 @@ class BaseV4DexAdapter(VenueAdapter):
                 tx["nonce"] = Nonce(self.w3.eth.get_transaction_count(account.address, "pending"))
                 signed = account.sign_transaction(tx)  # type: ignore[no-untyped-call]
                 tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
-
-            receipt: TxReceipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-            status: Literal["confirmed", "failed"] = "confirmed" if receipt["status"] == 1 else "failed"
-            log_fn = logger.info if status == "confirmed" else logger.error
-            tx_hash_str = coerce_hex_str(tx_hash)
-            log_fn(
-                "transaction_sent",
-                venue=self.name,
-                account=account.address,
-                hash=tx_hash_str,
-                status=status,
-                gas_used=receipt["gasUsed"],
-            )
-            output_raw = self._parse_swap_output_raw(receipt, output_token) if output_token and status == "confirmed" else None
-            token_id = self._parse_mint_token_id(receipt) if parse_token_id and status == "confirmed" else None
-            return TxResult(
-                hash=tx_hash_str,
-                status=status,
-                gas_used=receipt["gasUsed"],
-                output_raw=output_raw,
-                token_id=token_id,
-            )
         except Exception as e:
-            logger.error("transaction_failed", venue=self.name, account=account.address, error=str(e))
+            logger.error("transaction_broadcast_failed", venue=self.name, account=account.address, error=str(e))
             return TxResult(hash="", status="failed", error=str(e))
+
+        tx_hash_str = coerce_hex_str(tx_hash)
+        try:
+            receipt: TxReceipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        except Exception as wait_err:
+            try:
+                receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+            except Exception:
+                # The tx was broadcast and may still land. Reporting "failed"
+                # here would erase a live on-chain trade — surface the hash as
+                # "pending" so callers persist it and treat the leg as open.
+                logger.error(
+                    "transaction_unconfirmed",
+                    venue=self.name,
+                    account=account.address,
+                    hash=tx_hash_str,
+                    error=str(wait_err),
+                )
+                return TxResult(
+                    hash=tx_hash_str,
+                    status="pending",
+                    error=f"broadcast but unconfirmed: {wait_err}",
+                )
+
+        result = self._receipt_to_result(
+            tx_hash_str, receipt, output_token=output_token, parse_token_id=parse_token_id
+        )
+        log_fn = logger.info if result.status == "confirmed" else logger.error
+        log_fn(
+            "transaction_sent",
+            venue=self.name,
+            account=account.address,
+            hash=tx_hash_str,
+            status=result.status,
+            gas_used=result.gas_used,
+        )
+        return result
 
     def _parse_mint_token_id(self, receipt: TxReceipt) -> Optional[int]:
         """Extract the minted NFT token ID from a Transfer(from=0x0, to=owner, tokenId) event."""

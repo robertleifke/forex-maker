@@ -7,6 +7,8 @@ order: 5
 
 A single boolean flag `_arb_executing` on `ArbitrageEngine` serialises all execution across both pipelines. If a CEX-DEX trade is in flight and a DEX-DEX signal fires, the DEX-DEX trade is skipped (not queued). This is intentional: opportunity signals are continuous; missing one cycle is fine.
 
+The flag is claimed at the `asyncio.create_task` spawn site, not inside the execution task body. An update callback already queued on the event loop runs before the new task's body; claiming at spawn closes the window where that callback would still see the flag unset and start a second concurrent execution. Pinned in `tests/test_arb_guards.py` (`test_flag_claimed_at_spawn_before_task_body_runs`).
+
 ## CEX-DEX execution
 
 For directions where the sell leg is a DEX (Quidax → uni-base / uni-bsc), the engine runs a sell-side `eth_call` simulation before placing the Quidax buy order. If the simulation fails the buy is not placed, and the failure is classified into one of five categories with different responses (see Preflight error classification below).

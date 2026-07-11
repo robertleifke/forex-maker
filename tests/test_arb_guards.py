@@ -196,6 +196,63 @@ class TestArbExecutingFlag:
         )
 
     @pytest.mark.asyncio
+    async def test_flag_claimed_at_spawn_before_task_body_runs(self, test_db, monkeypatch):
+        """_arb_executing must be set when the execution task is spawned, not when
+        its body first runs — an update callback already queued on the loop runs
+        before the new task and would otherwise spawn a second execution.
+        """
+        buy_venue = _FakeV4Venue("uni-base")
+        sell_venue = _FakeV4Venue("uni-bsc")
+        engine, _ = _make_engine({"uni-base": buy_venue, "uni-bsc": sell_venue}, test_db)
+        engine.inventory.state.per_account_stable["uni-base"] = Decimal("1000")
+        engine.inventory.state.per_account_cngn["uni-bsc"] = Decimal("200000")
+
+        profitable_signal = {
+            "optimal_arb": {
+                "direction": "UNI_BASE_TO_UNI_BSC_DELTA_BALANCE",
+                "optimal_size_usd": 100.0,
+                "expected_profit_usd": 0.50,
+                "cngn_transferred": 160000.0,
+                "expected_usd_out": 100.50,
+                "gas_usd": 0.05,
+                "net_spread_bps": 50,
+            },
+            "prices": {"uni-base": "0.00061", "uni-bsc": "0.00061"},
+        }
+        monkeypatch.setattr(_dex_dex_module, "find_optimal_dex_arb", lambda: profitable_signal)
+        monkeypatch.setattr(_dex_dex_module, "estimate_dex_dex_trade", lambda d, s: {"cngn_transferred": 160000.0})
+        # Router's cNGN cap check needs the live pool cache — stub it so the
+        # candidate survives sizing and a route is actually selected.
+        import engine.arb.routing.router as _router_module
+        monkeypatch.setattr(
+            _router_module, "estimate_max_dex_buy_usd_for_cngn",
+            lambda direction, cngn_bal: {"optimal_size_usd": 100.0, "expected_profit_usd": 0.50},
+        )
+
+        tasks_created: list = []
+
+        def _fake_create_task(coro):
+            # Never start the coroutine — this is exactly the window between
+            # create_task and the task body running.
+            tasks_created.append(coro.__qualname__ if hasattr(coro, "__qualname__") else str(coro))
+            coro.close()
+            return SimpleNamespace(done=lambda: True)
+
+        assert not engine._arb_executing
+        with patch("asyncio.create_task", side_effect=_fake_create_task):
+            await engine.on_dex_dex_update()
+            assert [n for n in tasks_created if "_execute_route" in n], \
+                "profitable signal must spawn execution"
+            assert engine._arb_executing, "flag must be claimed at spawn time"
+
+            # A second update arriving before the task body runs must be dropped.
+            await engine.on_dex_dex_update()
+
+        execute_route_spawns = [n for n in tasks_created if "_execute_route" in n]
+        assert len(execute_route_spawns) == 1, \
+            f"second update must not spawn a concurrent execution: {tasks_created}"
+
+    @pytest.mark.asyncio
     async def test_arb_executing_flag_cleared_on_exception(self, test_db, monkeypatch):
         """_arb_executing must be False in the finally block, even when sell fails.
 

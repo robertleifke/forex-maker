@@ -149,6 +149,10 @@ class ArbitrageEngine:
             route = select_route(candidates, self.inventory)
             if route:
                 opp_id = f"cex-dex-{uuid.uuid4()}"
+                # Claim the serialization flag at spawn time — an update callback
+                # already queued on the loop runs before the new task's body and
+                # would otherwise pass the _arb_executing check too.
+                self._arb_executing = True
                 asyncio.create_task(self._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id))
 
         if not self._cex_curve_task or self._cex_curve_task.done():
@@ -220,6 +224,8 @@ class ArbitrageEngine:
                 )
                 route = select_route([candidate], self.inventory)
                 if route:
+                    # Same spawn-time claim as the CEX-DEX pipeline above.
+                    self._arb_executing = True
                     asyncio.create_task(self._execute_route(route_def, route, opp_id))
 
         if not self._dex_curve_task or self._dex_curve_task.done():

@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from typing import Any, Callable, Optional, cast
 
 import httpx
@@ -35,6 +35,25 @@ _LADDER_PLACE_CONCURRENCY = 4
 _ORDER_CANCEL_CONCURRENCY = 4
 _PENDING_CANCEL_POLL_ATTEMPTS = 3
 _PENDING_CANCEL_POLL_INTERVAL_SECONDS = 0.5
+_MARKET_ORDER_FILL_POLL_DELAYS = (0.25, 0.5, 1.0, 2.0, 4.0)
+
+
+def _fill_decimal(value: Any) -> Decimal:
+    raw = value.get("amount", "0") if isinstance(value, dict) else value
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")
+
+
+def _extract_market_fill(data: dict[str, Any]) -> tuple[Decimal, Decimal]:
+    """(executed_usdt, avg_price) from a Quidax order payload; zeros when unfilled.
+
+    A malformed field must degrade to zero, not raise: by the time this runs the
+    order is already placed, and an exception would either resubmit it
+    (double-trade) or report a filled order as failed.
+    """
+    return _fill_decimal(data.get("executed_volume", "0")), _fill_decimal(data.get("avg_price", "0"))
 
 
 class QuidaxAdapter(VenueAdapter):
@@ -755,7 +774,10 @@ class QuidaxAdapter(VenueAdapter):
             volume: Order volume, denominated per `side` as above
         Returns:
             (success, executed_usdt, avg_price_cngn_per_usdt, error) —
-            executed volume is always the base (USDT) amount regardless of side
+            executed volume is always the base (USDT) amount regardless of side.
+            When the creation response lacks fill data (it settles async), the
+            order is polled via fetch_order_by_id before returning; zeros are
+            returned only after polling is exhausted.
         """
         client = await self._get_client()
         submit_volume = self._round_market_volume(volume)
@@ -806,28 +828,30 @@ class QuidaxAdapter(VenueAdapter):
 
                 if response is None:
                     raise RuntimeError(last_error or "All Quidax market order endpoints failed")
-                
+
                 if resp_json.get("status") != "success":
                     error = str(resp_json.get("message", "Unknown Quidax Error"))
                     return False, Decimal("0"), Decimal("0"), error
-                    
+
                 data = resp_json.get("data", {})
 
-                # Safely extract amounts handling both string and dict formats from Quidax.
-                # executed_volume is the filled base-asset (USDT) amount; avg_price is
-                # quoted in cNGN per USDT for the usdtcngn market.
-                vol_data = data.get("executed_volume", "0")
-                executed_usdt = Decimal(str(vol_data.get("amount", "0") if isinstance(vol_data, dict) else vol_data))
-
-                price_data = data.get("avg_price", "0")
-                avg_price = Decimal(str(price_data.get("amount", "0") if isinstance(price_data, dict) else price_data))
-
-                logger.debug("market_order_placed", side=side, volume=float(volume), attempt=attempt)
-                return True, executed_usdt, avg_price, None
-                
             except Exception as e:
                 last_error = str(e)
                 logger.warning("market_order_attempt_failed", side=side, attempt=attempt, error=last_error)
+                continue
+
+            # The order is placed. Nothing below may re-enter the retry loop —
+            # a second submission would double-trade.
+            # executed_volume is the filled base-asset (USDT) amount; avg_price is
+            # quoted in cNGN per USDT for the usdtcngn market.
+            executed_usdt, avg_price = _extract_market_fill(data)
+            if executed_usdt <= 0 or avg_price <= 0:
+                # Fill data often settles after the creation response — poll the
+                # order so the executor's signal-price estimate stays the last resort.
+                executed_usdt, avg_price = await self._await_market_order_fill(str(data.get("id") or ""), side)
+
+            logger.debug("market_order_placed", side=side, volume=float(volume), attempt=attempt)
+            return True, executed_usdt, avg_price, None
 
         await self.alert_store.insert_alert(
             severity="critical",
@@ -835,6 +859,42 @@ class QuidaxAdapter(VenueAdapter):
             message=f"Quidax {self.name} market order failed after 5 retries: {last_error}",
         )
         return False, Decimal("0"), Decimal("0"), last_error
+
+    async def _await_market_order_fill(self, order_id: str, side: str) -> tuple[Decimal, Decimal]:
+        """Poll a placed market order until executed_volume and avg_price appear.
+
+        Quidax fills market orders immediately but often settles the fill fields
+        after the creation response. Returns zeros (with a warning alert) when
+        polling is exhausted, which routes the executor to its signal-price
+        estimate — the last resort, not the first.
+        """
+        if order_id:
+            for delay in _MARKET_ORDER_FILL_POLL_DELAYS:
+                await asyncio.sleep(delay)
+                status, order = await self._api.fetch_order_by_id(order_id)
+                if status != "found" or order is None:
+                    continue
+                executed_usdt, avg_price = _extract_market_fill(order)
+                if executed_usdt > 0 and avg_price > 0:
+                    logger.info(
+                        "market_order_fill_polled",
+                        side=side,
+                        order_id=order_id,
+                        executed_usdt=float(executed_usdt),
+                        avg_price=float(avg_price),
+                    )
+                    return executed_usdt, avg_price
+        else:
+            logger.warning("market_order_fill_poll_skipped_no_order_id", side=side)
+        await self.alert_store.insert_alert(
+            severity="warning",
+            category="cex",
+            message=(
+                f"Quidax {self.name} market {side} order {order_id or '<no id>'} returned no fill data "
+                f"after {len(_MARKET_ORDER_FILL_POLL_DELAYS)} polls — falling back to signal-price estimate"
+            ),
+        )
+        return Decimal("0"), Decimal("0")
 
     async def sync_order_ladder(self, reference_price: Decimal) -> None:
         """

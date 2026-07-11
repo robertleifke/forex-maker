@@ -126,6 +126,110 @@ async def test_place_market_order_quantizes_volume_to_market_precision():
     assert client.last_json["volume"] == "8.34"
 
 
+@pytest.fixture
+def instant_fill_polls(monkeypatch):
+    """Zero out the fill-poll backoff so poll tests run instantly."""
+    import engine.venues.cex.quidax as quidax_module
+    monkeypatch.setattr(quidax_module, "_MARKET_ORDER_FILL_POLL_DELAYS", (0, 0, 0))
+
+
+@pytest.mark.asyncio
+async def test_market_order_with_fill_data_does_not_poll():
+    """When the creation response already carries fill data, no order poll happens."""
+    client = _FakeClient({
+        "status": "success",
+        "data": {"id": "ord-1", "executed_volume": "8.34", "avg_price": "1639.34"},
+    })
+    adapter = _make_adapter()
+    adapter._get_client = AsyncMock(return_value=client)
+    adapter._api.fetch_order_by_id = AsyncMock()
+
+    success, executed, avg_price, error = await adapter.place_market_order("buy", Decimal("8.34"))
+
+    assert success and error is None
+    assert (executed, avg_price) == (Decimal("8.34"), Decimal("1639.34"))
+    adapter._api.fetch_order_by_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_market_order_polls_fill_when_creation_response_is_empty(instant_fill_polls):
+    """Missing fill data in the creation response (fills settle async) must be
+    resolved by polling the order, not by falling straight back to an estimate."""
+    client = _FakeClient({
+        "status": "success",
+        "data": {"id": "ord-2", "executed_volume": "0", "avg_price": "0"},
+    })
+    adapter = _make_adapter()
+    adapter._get_client = AsyncMock(return_value=client)
+    adapter._api.fetch_order_by_id = AsyncMock(side_effect=[
+        ("found", {"executed_volume": "0", "avg_price": "0"}),
+        ("found", {"executed_volume": "8.34", "avg_price": {"amount": "1639.34"}}),
+    ])
+
+    success, executed, avg_price, error = await adapter.place_market_order("sell", Decimal("8.34"))
+
+    assert success and error is None
+    assert (executed, avg_price) == (Decimal("8.34"), Decimal("1639.34"))
+    assert adapter._api.fetch_order_by_id.call_count == 2
+    assert adapter._api.fetch_order_by_id.call_args == call("ord-2")
+
+
+@pytest.mark.asyncio
+async def test_market_order_alerts_and_returns_zeros_when_polls_exhausted(instant_fill_polls):
+    """Only after polling is exhausted may the executor's signal-price estimate
+    kick in — and the degradation must be visible via a warning alert."""
+    alert_store = SimpleNamespace(insert_alert=AsyncMock())
+    client = _FakeClient({
+        "status": "success",
+        "data": {"id": "ord-3", "executed_volume": "0", "avg_price": "0"},
+    })
+    adapter = _make_adapter(alert_store=alert_store)
+    adapter._get_client = AsyncMock(return_value=client)
+    adapter._api.fetch_order_by_id = AsyncMock(
+        return_value=("found", {"executed_volume": "0", "avg_price": "0"})
+    )
+
+    success, executed, avg_price, error = await adapter.place_market_order("buy", Decimal("100"))
+
+    assert success and error is None
+    assert (executed, avg_price) == (Decimal("0"), Decimal("0"))
+    assert adapter._api.fetch_order_by_id.call_count == 3
+    alert_store.insert_alert.assert_awaited_once()
+    assert alert_store.insert_alert.call_args.kwargs["severity"] == "warning"
+    assert "signal-price estimate" in alert_store.insert_alert.call_args.kwargs["message"]
+
+
+@pytest.mark.asyncio
+async def test_market_order_malformed_fill_data_never_resubmits(instant_fill_polls):
+    """A parse failure after a successful placement must degrade to the poll path,
+    never re-enter the retry loop — a second submission would double-trade."""
+
+    class _CountingClient(_FakeClient):
+        def __init__(self, payload):
+            super().__init__(payload)
+            self.post_count = 0
+
+        async def post(self, *args, **kwargs):
+            self.post_count += 1
+            return await super().post(*args, **kwargs)
+
+    client = _CountingClient({
+        "status": "success",
+        "data": {"id": "ord-4", "executed_volume": {"weird": True}, "avg_price": None},
+    })
+    adapter = _make_adapter()
+    adapter._get_client = AsyncMock(return_value=client)
+    adapter._api.fetch_order_by_id = AsyncMock(
+        return_value=("found", {"executed_volume": "8.34", "avg_price": "1639.34"})
+    )
+
+    success, executed, avg_price, error = await adapter.place_market_order("sell", Decimal("8.34"))
+
+    assert success and error is None
+    assert client.post_count == 1, "malformed fill data must not trigger a resubmission"
+    assert (executed, avg_price) == (Decimal("8.34"), Decimal("1639.34"))
+
+
 @pytest.mark.asyncio
 async def test_sync_order_ladder_uses_usdtcngn_order_semantics_and_balances_to_smaller_notional():
     """Order sizing balances to whichever leg is smaller in notional terms.

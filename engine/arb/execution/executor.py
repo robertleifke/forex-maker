@@ -8,8 +8,7 @@ from typing import Any, Optional
 import structlog
 
 from engine.types import ArbitrageTrade
-from engine.venues.base import VenueAdapter, is_dex_execution_venue
-from engine.venues.cex.quidax import QuidaxAdapter
+from engine.venues.base import VenueAdapter, is_dex_execution_venue, is_market_order_venue
 
 logger = structlog.get_logger()
 
@@ -200,18 +199,17 @@ class ArbitrageExecutor:
         price_usd_per_cngn: Decimal,
         opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """Acquire cNGN on a CEX by spending `amount_usd` of USDT.
+        """Acquire cNGN on an API venue by spending `amount_usd` of stablecoin.
 
-        The Quidax market is ``usdtcngn`` (base USDT), so acquiring cNGN means
-        *selling* USDT into the bid side; the order ``volume`` is the USDT spent.
-        The returned trade is denominated as the wider arb expects: cNGN ``amount``
-        and a USD-per-cNGN ``price``.
+        Exchange-specific side/volume mapping lives in the venue adapter (e.g.
+        QuidaxAdapter.market_buy_cngn). The returned trade is denominated as the
+        wider arb expects: cNGN ``amount`` and a USD-per-cNGN ``price``.
         """
-        venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
+        venue = self.venues[venue_name]
+        if not is_market_order_venue(venue):
+            raise TypeError(f"{venue_name} is not a market-order venue")
 
-        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.place_market_order(
-            "sell", amount_usd
-        )
+        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.market_buy_cngn(amount_usd)
         if success and avg_price_cngn_per_usdt > 0:
             executed_cngn = executed_usdt * avg_price_cngn_per_usdt
             realized_price = Decimal(1) / avg_price_cngn_per_usdt
@@ -237,23 +235,17 @@ class ArbitrageExecutor:
         price_usd_per_cngn: Decimal,
         opportunity_id: str = "",
     ) -> Optional[ArbitrageTrade]:
-        """Dispose of `amount_cngn` cNGN on a CEX for USDT.
+        """Dispose of `amount_cngn` cNGN on an API venue for stablecoin.
 
-        The Quidax market is ``usdtcngn`` (base USDT), so dumping cNGN means
-        *buying* USDT off the ask side, paid for in cNGN. Quidax denominates a
-        market-buy ``volume`` in the quote asset — the cNGN to spend — so
-        `amount_cngn` passes through as the volume directly, which also
-        guarantees the cNGN spent never exceeds the buy-leg holdings.
-        (Verified against live orders 2026-07-09: a volume-10000 market buy
-        consumed exactly 10,000 cNGN; USDT-sized volumes were rejected with
-        110112 "Price is below allowed minimum" because ~200 was read as
-        200 cNGN, under the market's minimum order value.)
+        Exchange-specific side/volume mapping lives in the venue adapter (e.g.
+        QuidaxAdapter.market_sell_cngn, which pins the quote-denominated volume
+        that caused the July 2026 half-open failures).
         """
-        venue: QuidaxAdapter = self.venues[venue_name]  # type: ignore
+        venue = self.venues[venue_name]
+        if not is_market_order_venue(venue):
+            raise TypeError(f"{venue_name} is not a market-order venue")
 
-        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.place_market_order(
-            "buy", amount_cngn
-        )
+        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.market_sell_cngn(amount_cngn)
         if success and avg_price_cngn_per_usdt > 0:
             executed_cngn = executed_usdt * avg_price_cngn_per_usdt
             realized_price = Decimal(1) / avg_price_cngn_per_usdt

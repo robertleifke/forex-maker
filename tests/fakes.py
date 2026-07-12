@@ -194,6 +194,13 @@ class FakeCexAdapter:
             return True, self._executed_usdt, self._avg_price, None
         return False, Decimal("0"), self._avg_price, f"simulated {side} failure"
 
+    # MarketOrderVenue surface, mirroring QuidaxAdapter's mapping.
+    async def market_buy_cngn(self, spend_stable: Decimal):
+        return await self.place_market_order("sell", spend_stable)
+
+    async def market_sell_cngn(self, amount_cngn: Decimal):
+        return await self.place_market_order("buy", amount_cngn)
+
 
 # Register FakeDexAdapter as a virtual subclass of BaseV4DexAdapter so that
 # isinstance(fake, BaseV4DexAdapter) returns True for WS subscription tests.

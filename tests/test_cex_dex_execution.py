@@ -88,6 +88,13 @@ class FakeCexVenue:
             return True, volume, Decimal("1639.34"), None
         return False, volume, Decimal("0"), "order rejected"
 
+    # MarketOrderVenue surface, mirroring QuidaxAdapter's mapping.
+    async def market_buy_cngn(self, spend_stable):
+        return await self.place_market_order("sell", spend_stable)
+
+    async def market_sell_cngn(self, amount_cngn):
+        return await self.place_market_order("buy", amount_cngn)
+
 
 def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
     """Build a SelectedRoute for the QUIDAX_TO_UNI_BASE direction."""

@@ -751,6 +751,25 @@ class QuidaxAdapter(VenueAdapter):
 
         return result
 
+    async def market_buy_cngn(self, spend_stable: Decimal) -> tuple[bool, Decimal, Decimal, str | None]:
+        """Acquire cNGN by spending `spend_stable` USDT.
+
+        The usdtcngn market is base-USDT, so acquiring cNGN is a USDT *sell*
+        sized in USDT (base). Denomination contract in place_market_order;
+        mapping pinned in tests/test_quidax_adapter.py.
+        """
+        return await self.place_market_order("sell", spend_stable)
+
+    async def market_sell_cngn(self, amount_cngn: Decimal) -> tuple[bool, Decimal, Decimal, str | None]:
+        """Dispose of `amount_cngn` cNGN by *buying* USDT.
+
+        Quidax denominates a market-buy volume in the quote asset (cNGN), so
+        the cNGN amount passes through directly — guaranteeing the cNGN spent
+        never exceeds the buy-leg holdings. A USDT-sized volume here caused the
+        July 2026 half-open failures (error 110112).
+        """
+        return await self.place_market_order("buy", amount_cngn)
+
     async def place_market_order(
         self,
         side: str,

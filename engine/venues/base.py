@@ -45,6 +45,26 @@ class DexExecutionVenue(Protocol):
     async def ensure_trade_approvals(self) -> None: ...
 
 
+class MarketOrderVenue(Protocol):
+    """REST venue that fills cNGN market orders — the execution surface of `api` arb legs.
+
+    Both methods return ``(success, executed_stable, avg_price_cngn_per_stable, error)``:
+    executed volume is always the stablecoin amount, price always cNGN per
+    stablecoin, regardless of how the exchange denominates the underlying
+    order. Exchange-specific side/volume mapping lives in the adapter.
+    """
+
+    name: str
+
+    async def market_buy_cngn(self, spend_stable: Decimal) -> tuple[bool, Decimal, Decimal, str | None]: ...
+    async def market_sell_cngn(self, amount_cngn: Decimal) -> tuple[bool, Decimal, Decimal, str | None]: ...
+
+
+def is_market_order_venue(venue: VenueAdapter) -> TypeGuard[MarketOrderVenue]:
+    """Return True when a venue exposes the cNGN market-order execution surface."""
+    return all(hasattr(venue, attr) for attr in ("market_buy_cngn", "market_sell_cngn"))
+
+
 class SyncOrderLadderVenue(Protocol):
     async def sync_order_ladder(self, reference_price_ngn: Decimal) -> None: ...
 

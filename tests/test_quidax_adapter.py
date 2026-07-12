@@ -126,6 +126,33 @@ async def test_place_market_order_quantizes_volume_to_market_precision():
     assert client.last_json["volume"] == "8.34"
 
 
+@pytest.mark.asyncio
+async def test_market_buy_cngn_maps_to_base_usdt_sell():
+    """Acquiring cNGN on usdtcngn is a USDT *sell* sized in USDT (base)."""
+    adapter = _make_adapter()
+    adapter.place_market_order = AsyncMock(return_value=(True, Decimal("500"), Decimal("1639.34"), None))
+
+    await adapter.market_buy_cngn(Decimal("500"))
+
+    adapter.place_market_order.assert_awaited_once_with("sell", Decimal("500"))
+
+
+@pytest.mark.asyncio
+async def test_market_sell_cngn_maps_to_quote_denominated_buy():
+    """Disposing of cNGN is a USDT *buy* whose volume is the cNGN to spend.
+
+    Regression pin for the July 2026 half-open failures: a USDT-sized volume
+    was read as ~200 cNGN and rejected with 110112 "Price is below allowed
+    minimum" (verified against live fills 2026-07-09).
+    """
+    adapter = _make_adapter()
+    adapter.place_market_order = AsyncMock(return_value=(True, Decimal("500"), Decimal("1639.34"), None))
+
+    await adapter.market_sell_cngn(Decimal("800000"))
+
+    adapter.place_market_order.assert_awaited_once_with("buy", Decimal("800000"))
+
+
 @pytest.fixture
 def instant_fill_polls(monkeypatch):
     """Zero out the fill-poll backoff so poll tests run instantly."""

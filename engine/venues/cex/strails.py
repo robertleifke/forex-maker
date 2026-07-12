@@ -116,53 +116,60 @@ class StrailsAdapter(VenueAdapter):
     # ------------------------------------------------------------------
 
     async def get_current_price(self) -> Optional[PriceQuote]:
-        """Best bid/ask from /fx/orderbook/stats, in cNGN per stablecoin."""
-        try:
-            data = await self._get("fx/orderbook/stats", {"pair": self.pair})
-            stats = data.get("stats", {})
-            bid = Decimal(str(stats.get("bestBidPrice", "0") or "0"))
-            ask = Decimal(str(stats.get("bestAskPrice", "0") or "0"))
-            if bid <= 0 or ask <= 0:
-                # Empty or one-sided book (CNGN-USDT is empty as of 2026-07).
-                return None
-            return PriceQuote(
-                source=self.name,
-                timestamp=int(time.time() * 1000),
-                bid=bid,
-                ask=ask,
-                mid=(bid + ask) / 2,
-            )
-        except Exception as e:
-            logger.error("strails_price_fetch_failed", pair=self.pair, error=str(e))
+        """Best *executable* prices in cNGN per stablecoin (Quidax convention).
+
+        Derived from the orderbook, not /fx/orderbook/stats: the stats
+        bestBid/bestAsk are LP reference prices, which fills never execute at
+        (see get_order_book_depth).
+        """
+        depth = await self.get_order_book_depth()
+        if depth is None or not depth.bids or not depth.asks:
+            # Empty or one-sided book (CNGN-USDT is empty as of 2026-07).
             return None
+        bid = depth.bids[0].price
+        ask = depth.asks[0].price
+        return PriceQuote(
+            source=self.name,
+            timestamp=int(time.time() * 1000),
+            bid=bid,
+            ask=ask,
+            mid=(bid + ask) / 2,
+        )
 
     async def get_order_book_depth(self, limit: int = 50) -> Optional[OrderBookDepth]:
-        """Map LP orders from /fx/orderbook onto price levels.
+        """Executable depth in the Quidax convention: bid = cNGN received per
+        stablecoin sold, ask = cNGN paid per stablecoin bought, amounts in
+        stablecoin units.
 
-        Levels follow the Quidax depth convention: price in cNGN per
-        stablecoin, amount in stablecoin units. StablesRail denominates
-        `availableLiquidity` in the asset the taker delivers — stablecoin for
-        buyOrders, cNGN for sellOrders (verified against the live book, where
-        both sides resolve to the same ~USD notional) — so sell-side liquidity
-        is converted through the order price. Liquidity is informational until
-        match time per the API's own note.
+        Two StablesRail quirks are normalized here so downstream profit math
+        needs no venue special-casing — both verified with pricing-only quotes
+        against the live book on 2026-07-12 (13,890 cNGN: buy quoted
+        10.047864 USDC at 1389.33 × 0.995; sell quoted 9.951896 USDC at
+        1388.77 × 1.005):
+
+        1. Orders are cNGN-sided and the LP `price` field is a reference, not
+           executable. Takers acquiring cNGN cross *sellOrders* at
+           price × (1 − spread%); takers disposing of cNGN cross *buyOrders*
+           at price × (1 + spread%). Hence bids map from sellOrders and asks
+           from buyOrders.
+        2. `availableLiquidity` is denominated in the asset the LP delivers:
+           cNGN on sellOrders (converted to stablecoin here), stablecoin on
+           buyOrders. It is informational until match time per the API's note.
         """
         try:
             data = await self._get("fx/orderbook", {"pair": self.pair, "limit": min(limit, 100)})
-            bids = [
-                OrderBookLevel(price=price, amount=liquidity)
-                for order in data.get("buyOrders", [])
-                if order.get("status") == "active"
-                and (price := Decimal(str(order.get("price", "0")))) > 0
-                and (liquidity := Decimal(str(order.get("availableLiquidity", "0")))) > 0
-            ]
-            asks = [
-                OrderBookLevel(price=price, amount=liquidity / price)
-                for order in data.get("sellOrders", [])
-                if order.get("status") == "active"
-                and (price := Decimal(str(order.get("price", "0")))) > 0
-                and (liquidity := Decimal(str(order.get("availableLiquidity", "0")))) > 0
-            ]
+            bids: list[OrderBookLevel] = []
+            for order in data.get("sellOrders", []):
+                level = self._executable_level(order, taker_receives_cngn=True)
+                if level is not None:
+                    bids.append(level)
+            asks: list[OrderBookLevel] = []
+            for order in data.get("buyOrders", []):
+                level = self._executable_level(order, taker_receives_cngn=False)
+                if level is not None:
+                    asks.append(level)
+            bids.sort(key=lambda level: level.price, reverse=True)
+            asks.sort(key=lambda level: level.price)
             return OrderBookDepth(
                 venue=self.name,
                 pair=self.pair.replace("-", "/"),
@@ -173,6 +180,21 @@ class StrailsAdapter(VenueAdapter):
         except Exception as e:
             logger.error("strails_depth_fetch_failed", pair=self.pair, error=str(e))
             return None
+
+    @staticmethod
+    def _executable_level(order: dict[str, Any], *, taker_receives_cngn: bool) -> OrderBookLevel | None:
+        if order.get("status") != "active":
+            return None
+        price = Decimal(str(order.get("price", "0")))
+        liquidity = Decimal(str(order.get("availableLiquidity", "0")))
+        spread_pct = Decimal(str(order.get("spread", "0")))
+        if price <= 0 or liquidity <= 0:
+            return None
+        if taker_receives_cngn:
+            executable = price * (1 - spread_pct / 100)
+            return OrderBookLevel(price=executable, amount=liquidity / executable)
+        executable = price * (1 + spread_pct / 100)
+        return OrderBookLevel(price=executable, amount=liquidity)
 
     async def get_position(self) -> Position:
         """On-chain ERC-20 balances of the StablesRail smart wallet on Base."""
@@ -207,12 +229,13 @@ class StrailsAdapter(VenueAdapter):
         """Acquire cNGN by spending `spend_stable` stablecoin.
 
         StablesRail denominates market orders in cNGN, so the stablecoin
-        budget is converted through the current best ask before submission.
+        budget is converted through the best executable bid (the cNGN received
+        per stablecoin when crossing the LP sell side) before submission.
         """
         quote = await self.get_current_price()
-        if quote is None or quote.ask <= 0:
-            return False, Decimal("0"), Decimal("0"), f"no {self.pair} ask price available"
-        cngn_amount = (spend_stable * quote.ask).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+        if quote is None or quote.bid <= 0:
+            return False, Decimal("0"), Decimal("0"), f"no {self.pair} bid price available"
+        cngn_amount = (spend_stable * quote.bid).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
         return await self._execute_market_order("buy", cngn_amount)
 
     async def market_sell_cngn(self, amount_cngn: Decimal) -> tuple[bool, Decimal, Decimal, str | None]:

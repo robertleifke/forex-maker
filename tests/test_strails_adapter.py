@@ -1,10 +1,14 @@
-"""StablesRail adapter invariants: price/depth mapping and the escrow trade lifecycle.
+"""StablesRail adapter invariants: executable-price mapping and the escrow trade lifecycle.
 
-The non-obvious pins:
-  1. Depth normalization — StablesRail denominates availableLiquidity in the
-     asset the taker delivers (stable on buyOrders, cNGN on sellOrders); both
-     sides must come out in stablecoin units per the Quidax depth convention.
-  2. Lifecycle mapping — signing/settling are NOT failures; only
+The non-obvious pins (all quote-verified against the live book 2026-07-12):
+  1. Executable prices — LP `price` fields are references; takers acquiring
+     cNGN cross *sellOrders* at price × (1 − spread%), takers disposing cNGN
+     cross *buyOrders* at price × (1 + spread%). So bids map from sellOrders,
+     asks from buyOrders, and depth/PriceQuote carry executable prices.
+  2. Liquidity denomination — availableLiquidity is the asset the LP delivers
+     (cNGN on sellOrders, stable on buyOrders); both sides normalize to
+     stablecoin units per the Quidax depth convention.
+  3. Lifecycle mapping — signing/settling are NOT failures; only
      completed/failed/expired are terminal, and a poll-budget exhaustion must
      surface the tradeId, never a silent zero-fill "failure".
 """
@@ -76,14 +80,21 @@ def _success(data: dict) -> dict:
 _LIVE_BOOK = _success({
     "pair": "CNGN-USDC",
     "buyOrders": [{
-        "orderId": "order-b", "price": "1388.77", "availableLiquidity": "10018.595012",
+        "orderId": "order-b", "price": "1388.77", "spread": 0.5,
+        "availableLiquidity": "10018.595012",
         "minAmount": "500", "maxAmount": "15000000", "status": "active",
     }],
     "sellOrders": [{
-        "orderId": "order-s", "price": "1389.33", "availableLiquidity": "14029879.907407",
+        "orderId": "order-s", "price": "1389.33", "spread": 0.5,
+        "availableLiquidity": "14029879.907407",
         "minAmount": "500", "maxAmount": "15000000", "status": "active",
     }],
 })
+
+# Executable prices verified via pricing-only quotes 2026-07-12:
+# buy 13890 cNGN → 10.047864 USDC (1389.33 × 0.995); sell → 9.951896 USDC (1388.77 × 1.005).
+_EXEC_BID = Decimal("1389.33") * Decimal("0.995")   # 1382.383350
+_EXEC_ASK = Decimal("1388.77") * Decimal("1.005")   # 1395.713850
 
 
 @pytest.fixture(autouse=True)
@@ -94,48 +105,44 @@ def instant_trade_polls(monkeypatch):
 
 class TestMarketData:
     @pytest.mark.asyncio
-    async def test_price_quote_in_cngn_per_stable(self):
+    async def test_price_quote_is_executable_not_reference(self):
+        """PriceQuote carries executable prices: bid from sellOrders × (1−s),
+        ask from buyOrders × (1+s) — never the LP reference prices."""
         client = _FakeClient()
-        client.get_routes["fx/orderbook/stats"] = _success({
-            "stats": {"bestBidPrice": "1388.77", "bestAskPrice": "1389.33"},
-        })
+        client.get_routes["fx/orderbook"] = _LIVE_BOOK
         quote = await _make_adapter(client).get_current_price()
 
         assert quote is not None
-        assert quote.bid == Decimal("1388.77")
-        assert quote.ask == Decimal("1389.33")
+        assert quote.bid == _EXEC_BID
+        assert quote.ask == _EXEC_ASK
+        assert quote.bid < quote.ask
         assert quote.mid == (quote.bid + quote.ask) / 2
 
     @pytest.mark.asyncio
     async def test_empty_book_yields_no_price(self):
-        """CNGN-USDT is empty today: stats omit best prices entirely."""
+        """CNGN-USDT is empty today: no orders on either side."""
         client = _FakeClient()
-        client.get_routes["fx/orderbook/stats"] = _success({
-            "stats": {"totalBuyLiquidity": "0", "totalSellLiquidity": "0"},
-        })
+        client.get_routes["fx/orderbook"] = _success({"buyOrders": [], "sellOrders": []})
         assert await _make_adapter(client).get_current_price() is None
 
     @pytest.mark.asyncio
-    async def test_depth_normalizes_both_sides_to_stable_units(self):
-        """Buy-side liquidity is stable-denominated; sell-side is cNGN and must
-        be converted through the order price (live book: both ≈ $10k)."""
+    async def test_depth_swaps_sides_and_normalizes_to_stable_units(self):
+        """Bids come from sellOrders (cNGN liquidity ÷ executable price);
+        asks from buyOrders (stable liquidity as-is). Live book: both ≈ $10k."""
         client = _FakeClient()
-        client.get_routes["fx/orderbook?"] = _LIVE_BOOK
-        client.get_routes["fx/orderbook&"] = _LIVE_BOOK
         client.get_routes["fx/orderbook"] = _LIVE_BOOK
         depth = await _make_adapter(client).get_order_book_depth()
 
         assert depth is not None
-        assert depth.bids[0].price == Decimal("1388.77")
-        assert depth.bids[0].amount == Decimal("10018.595012")
-        assert depth.asks[0].price == Decimal("1389.33")
-        # 14,029,879.907407 cNGN / 1389.33 ≈ 10,098 USDC
-        assert depth.asks[0].amount == Decimal("14029879.907407") / Decimal("1389.33")
+        assert depth.bids[0].price == _EXEC_BID
+        assert depth.bids[0].amount == Decimal("14029879.907407") / _EXEC_BID
+        assert depth.asks[0].price == _EXEC_ASK
+        assert depth.asks[0].amount == Decimal("10018.595012")
 
     @pytest.mark.asyncio
     async def test_inactive_orders_excluded_from_depth(self):
         book = _success({
-            "buyOrders": [{"price": "1388.77", "availableLiquidity": "100", "status": "paused"}],
+            "buyOrders": [{"price": "1388.77", "spread": 0.5, "availableLiquidity": "100", "status": "paused"}],
             "sellOrders": [],
         })
         client = _FakeClient()
@@ -151,9 +158,7 @@ class TestTradeLifecycle:
         client = _FakeClient()
         client.post_response = _success({"tradeId": "trade-1", "status": "pending"})
         client.get_routes["fx/trade/status/trade-1"] = status_sequence
-        client.get_routes["fx/orderbook/stats"] = _success({
-            "stats": {"bestBidPrice": "1388.77", "bestAskPrice": "1389.33"},
-        })
+        client.get_routes["fx/orderbook"] = _LIVE_BOOK
         return client
 
     @pytest.mark.asyncio
@@ -177,16 +182,17 @@ class TestTradeLifecycle:
         assert client.post_payloads[0]["idempotencyKey"].startswith("fxm-")
 
     @pytest.mark.asyncio
-    async def test_buy_converts_stable_budget_through_ask(self):
+    async def test_buy_converts_stable_budget_through_executable_bid(self):
         client = self._trading_client([
-            _success({"status": "completed", "usdcAmount": "500", "price": "1389.33"}),
+            _success({"status": "completed", "usdcAmount": "500", "price": "1382.38"}),
         ])
         success, _, _, _ = await _make_adapter(client).market_buy_cngn(Decimal("500"))
 
         assert success
         assert client.post_payloads[0]["side"] == "buy"
-        # 500 USDC × 1389.33 ask, rounded down to 6 dp.
-        assert client.post_payloads[0]["cngnAmount"] == "694665.000000"
+        # 500 USDC × executable bid (1389.33 × 0.995), rounded down to 6 dp —
+        # sizing through the reference ask would overshoot the budget by the spread.
+        assert client.post_payloads[0]["cngnAmount"] == "691191.675000"
 
     @pytest.mark.asyncio
     async def test_failed_trade_reports_error(self):

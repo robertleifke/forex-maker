@@ -103,6 +103,26 @@ def instant_trade_polls(monkeypatch):
     monkeypatch.setattr(strails_module, "_TRADE_POLL_BUDGET_SECONDS", 0.5)
 
 
+class TestProxyPlumbing:
+    @pytest.mark.asyncio
+    async def test_socks_proxy_builds_client(self):
+        """Dev machines tunnel through the allowlisted VPS via ssh -D (SOCKS5).
+        Pins the httpx `proxy=` kwarg and the httpx[socks] extra — either
+        drifting would break every dev StablesRail call at client creation."""
+        adapter = StrailsAdapter(
+            api_key="test-key",
+            alert_store=SimpleNamespace(insert_alert=AsyncMock()),
+            wallet_address="0x7DB25C4Bd88Fd07aDf0585348c97f0C1BA7dC6a9",
+            rpc_url="http://localhost:9",  # never contacted in this test
+            cngn_address="0x46C85152bFe9f96829aA94755D9f915F9B10EF5F",
+            stable_address="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            proxy="socks5://localhost:1080",
+        )
+        client = await adapter._get_client()
+        assert client is not None
+        await adapter.close()
+
+
 class TestMarketData:
     @pytest.mark.asyncio
     async def test_price_quote_is_executable_not_reference(self):

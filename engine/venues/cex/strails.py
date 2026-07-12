@@ -61,12 +61,18 @@ class StrailsAdapter(VenueAdapter):
         stable_address: str,
         pair: str = "CNGN-USDC",
         base_url: str = "https://beta.stablesrail.io/v1",
+        proxy: str | None = None,
         name: str = "strails",
     ):
         self.name = name
         self.api_key = api_key
         self.pair = pair
         self.base_url = base_url.rstrip("/")
+        # StablesRail enforces an IP allowlist on every call. Dev machines have
+        # rotating IPs, so they tunnel through the allowlisted deploy VPS
+        # (`ssh -D 1080 <vps>` → proxy="socks5://localhost:1080"). Scoped here
+        # rather than HTTPS_PROXY so only StablesRail traffic takes the tunnel.
+        self.proxy = proxy
         self.alert_store = alert_store
         self.stable_symbol = pair.split("-")[1].lower()  # "usdc" / "usdt"
         # Dynamic token-amount field in trade responses, e.g. "usdcAmount".
@@ -93,6 +99,7 @@ class StrailsAdapter(VenueAdapter):
             self._client = httpx.AsyncClient(
                 headers={"x-api-key": self.api_key, "Content-Type": "application/json"},
                 timeout=30,
+                proxy=self.proxy,
             )
         return self._client
 

@@ -176,9 +176,14 @@ class TestMarketData:
 
 class TestTradeLifecycle:
     def _trading_client(self, status_sequence: list[dict]) -> _FakeClient:
+        """Trade status is polled via the trades LIST — the documented
+        /fx/trade/status/:id endpoint 404s on the live API (2026-07-13)."""
         client = _FakeClient()
         client.post_response = _success({"tradeId": "trade-1", "status": "pending"})
-        client.get_routes["fx/trade/status/trade-1"] = status_sequence
+        client.get_routes["fx/trades"] = [
+            _success({"trades": [dict(payload["data"], tradeId="trade-1")], "count": 1})
+            for payload in status_sequence
+        ]
         client.get_routes["fx/orderbook"] = _LIVE_BOOK
         return client
 
@@ -270,6 +275,35 @@ class TestTradeLifecycle:
         assert "trade-1" in error and "may yet settle" in error
         alert_store.insert_alert.assert_awaited_once()
         assert alert_store.insert_alert.call_args.kwargs["severity"] == "critical"
+
+    @pytest.mark.asyncio
+    async def test_missing_trade_id_reconciles_via_trades_list(self):
+        """Live API quirk (2026-07-13 canary): market-order Success responses can
+        omit the tradeId — but the trade exists. The adapter must recover it from
+        the trades list rather than misreport a live trade as a no-trade."""
+        client = _FakeClient()
+        client.post_response = _success({})  # accepted, no tradeId anywhere
+        client.get_routes["fx/trades"] = _success({"trades": [{
+            "tradeId": "trade-9", "side": "sell", "cngnAmount": "695000.000000",
+            "status": "completed", "usdcAmount": "500.25", "price": "1389.33",
+        }], "count": 1})
+        client.get_routes["fx/orderbook"] = _LIVE_BOOK
+
+        success, executed, price, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+
+        assert success and error is None
+        assert (executed, price) == (Decimal("500.25"), Decimal("1389.33"))
+
+    @pytest.mark.asyncio
+    async def test_trade_id_from_nested_trade_object(self):
+        client = self._trading_client([
+            _success({"status": "completed", "usdcAmount": "500", "price": "1382.38"}),
+        ])
+        client.post_response = _success({"trade": {"tradeId": "trade-1", "status": "pending"}})
+
+        success, _, _, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+
+        assert success and error is None
 
     @pytest.mark.asyncio
     async def test_rejected_order_returns_api_message(self):

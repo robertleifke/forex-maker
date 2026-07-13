@@ -279,9 +279,17 @@ class StrailsAdapter(VenueAdapter):
         if resp_json.get("status") != "Success":
             return False, Decimal("0"), Decimal("0"), str(resp_json.get("message", "Unknown Strails error"))
 
-        trade_id = str(resp_json.get("data", {}).get("tradeId", ""))
+        data = resp_json.get("data", {})
+        trade_id = str(data.get("tradeId") or (data.get("trade") or {}).get("tradeId") or "")
         if not trade_id:
-            # Order accepted but no trade id — cannot track settlement; alert loudly.
+            # Live API returns Success without a tradeId at the documented
+            # location (observed 2026-07-13 canary — the trade existed anyway).
+            # Losing track here would misreport a live trade as a no-trade, so
+            # reconcile against the trades list before giving up.
+            logger.warning("strails_market_order_missing_trade_id", side=side, data_keys=sorted(data.keys()))
+            trade_id = await self._reconcile_trade_id(side, str(cngn_amount))
+        if not trade_id:
+            # Order accepted but untrackable — alert loudly; a live trade may exist.
             await self.alert_store.insert_alert(
                 severity="critical",
                 category="cex",
@@ -290,6 +298,20 @@ class StrailsAdapter(VenueAdapter):
             return False, Decimal("0"), Decimal("0"), "market order accepted without tradeId"
 
         return await self._await_trade_terminal(trade_id, side)
+
+    async def _reconcile_trade_id(self, side: str, cngn_amount: str) -> str:
+        """Find the just-placed trade in the trades list by side and exact cNGN amount."""
+        try:
+            data = await self._get("fx/trades", {"pair": self.pair, "side": side, "limit": 5})
+        except Exception as e:
+            logger.error("strails_trade_id_reconcile_failed", side=side, error=str(e))
+            return ""
+        for row in data.get("trades", []):
+            if str(row.get("cngnAmount", "")) == cngn_amount and str(row.get("side", "")).lower() == side:
+                trade_id = str(row.get("tradeId", ""))
+                logger.warning("strails_trade_id_reconciled", trade_id=trade_id, side=side)
+                return trade_id
+        return ""
 
     async def _await_trade_terminal(
         self, trade_id: str, side: str
@@ -308,9 +330,18 @@ class StrailsAdapter(VenueAdapter):
         while time.monotonic() < deadline:
             await asyncio.sleep(_TRADE_POLL_INTERVAL_SECONDS)
             try:
-                data = await self._get(f"fx/trade/status/{trade_id}")
+                # The documented GET /fx/trade/status/:id returns 404 on the
+                # live API (observed 2026-07-13); the trades list is the
+                # working status source.
+                listing = await self._get("fx/trades", {"pair": self.pair, "limit": 20})
             except Exception as e:
                 logger.warning("strails_trade_status_poll_failed", trade_id=trade_id, error=str(e))
+                continue
+            data = next(
+                (t for t in listing.get("trades", []) if str(t.get("tradeId")) == trade_id),
+                None,
+            )
+            if data is None:
                 continue
             status = str(data.get("status", "unknown"))
             if status not in _TERMINAL_TRADE_STATUSES:
@@ -337,7 +368,7 @@ class StrailsAdapter(VenueAdapter):
 
         message = (
             f"Strails trade {trade_id} still '{status}' after {int(_TRADE_POLL_BUDGET_SECONDS)}s — "
-            f"it may yet settle; resolve via /fx/trade/status/{trade_id} before any retry"
+            f"it may yet settle; check {trade_id} in /fx/trades before any retry"
         )
         await self.alert_store.insert_alert(severity="critical", category="cex", message=message)
         return False, Decimal("0"), Decimal("0"), message

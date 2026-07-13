@@ -327,6 +327,8 @@ class StrailsAdapter(VenueAdapter):
         """
         deadline = time.monotonic() + _TRADE_POLL_BUDGET_SECONDS
         status = "unknown"
+        fetch_errors = 0
+        polls_without_listing = 0
         while time.monotonic() < deadline:
             await asyncio.sleep(_TRADE_POLL_INTERVAL_SECONDS)
             try:
@@ -335,6 +337,7 @@ class StrailsAdapter(VenueAdapter):
                 # working status source.
                 listing = await self._get("fx/trades", {"pair": self.pair, "limit": 20})
             except Exception as e:
+                fetch_errors += 1
                 logger.warning("strails_trade_status_poll_failed", trade_id=trade_id, error=str(e))
                 continue
             data = next(
@@ -342,6 +345,9 @@ class StrailsAdapter(VenueAdapter):
                 None,
             )
             if data is None:
+                # Observed 2026-07-13 (reverse canary): an in-flight trade can be
+                # absent from the list for its entire settlement window.
+                polls_without_listing += 1
                 continue
             status = str(data.get("status", "unknown"))
             if status not in _TERMINAL_TRADE_STATUSES:
@@ -367,7 +373,8 @@ class StrailsAdapter(VenueAdapter):
             return False, Decimal("0"), Decimal("0"), error
 
         message = (
-            f"Strails trade {trade_id} still '{status}' after {int(_TRADE_POLL_BUDGET_SECONDS)}s — "
+            f"Strails trade {trade_id} still '{status}' after {int(_TRADE_POLL_BUDGET_SECONDS)}s "
+            f"({polls_without_listing} polls without the trade listed, {fetch_errors} fetch errors) — "
             f"it may yet settle; check {trade_id} in /fx/trades before any retry"
         )
         await self.alert_store.insert_alert(severity="critical", category="cex", message=message)

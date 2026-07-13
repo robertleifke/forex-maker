@@ -10,7 +10,7 @@ import structlog
 
 from engine.arb.routing.route_registry import ROUTES, ROUTES_BY_DIRECTION
 from engine.types import TxResult
-from engine.venues.base import DexExecutionVenue, is_dex_execution_venue
+from engine.venues.base import DexExecutionVenue, is_dex_execution_venue, is_market_order_venue
 
 
 logger = structlog.get_logger()
@@ -303,10 +303,52 @@ async def recover_cex_half_open(engine: Any, opp_id: str) -> dict[str, Any]:
                 f"(old record — check buy tx {opp.buy_tx_hash} manually)"
             )
 
-        # Same double-execution guard as DEX-DEX: a recorded DEX sell hash must
-        # be resolved on-chain before reversing the buy, or a late-landing sell
-        # plus the reversal would leave the book net short cNGN.
+        # Same double-execution guard as DEX-DEX: a recorded sell reference
+        # (tx hash for DEX legs, venue trade id for API legs) must be resolved
+        # before reversing the buy, or a late-landing sell plus the reversal
+        # would leave the book net short cNGN.
         sell_is_cex = cex_route_def.sell_leg.leg_type == "api"
+        if opp.sell_tx_hash and sell_is_cex:
+            sell_venue = engine.venues[sell_venue_name]
+            if not is_market_order_venue(sell_venue):
+                raise TypeError(f"{sell_venue_name} is not a market-order venue")
+            trade_result = await sell_venue.check_trade(opp.sell_tx_hash)
+            if trade_result is None or trade_result.status == "pending":
+                raise ValueError(
+                    f"sell trade {opp.sell_tx_hash} is placed but unresolved; recovering now could "
+                    f"execute the sell twice — wait for it to reach a terminal state, then re-run /recover"
+                )
+            if trade_result.status == "filled":
+                usd_out = trade_result.executed_stable
+                actual_profit = usd_out - opp.recommended_size_usd
+                reason = "Recovered: sell trade filled"
+                await arbitrage_store.update_arbitrage_opportunity(
+                    opp_id,
+                    status="completed",
+                    actual_profit_usd=float(actual_profit),
+                    reason=reason,
+                )
+                engine.inventory.record_trade_complete(opp_id, opp.recommended_size_usd, actual_profit, Decimal("0"))
+                await engine.history.record_executed_raw(
+                    opp_id=opp_id,
+                    pipeline="cex_dex",
+                    direction=cex_direction,
+                    buy_venue=opp.buy_venue,
+                    sell_venue=opp.sell_venue,
+                    optimal_size_usd=opp.recommended_size_usd,
+                    routed_size_usd=opp.recommended_size_usd,
+                    executed_size_usd=opp.recommended_size_usd,
+                    expected_profit_usd=opp.expected_profit_usd,
+                    net_spread_bps=opp.net_spread_bps,
+                    actual_profit_usd=actual_profit,
+                    reason=reason,
+                    buy_tx_hash=opp.buy_tx_hash,
+                    sell_tx_hash=opp.sell_tx_hash,
+                )
+                logger.info("cex_dex_recovery_completed", opp_id=opp_id, method="sell_landed", profit_usd=float(actual_profit))
+                return {"status": "completed", "method": "sell_landed", "opp_id": opp_id, "profit_usd": float(actual_profit)}
+            # Terminal failure on the venue — the sell definitively failed; reverse the buy below.
+
         if opp.sell_tx_hash and not sell_is_cex:
             sell_venue = engine.venues[sell_venue_name]
             if not is_dex_execution_venue(sell_venue):

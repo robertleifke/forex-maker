@@ -198,11 +198,12 @@ class TestTradeLifecycle:
                 "fintechNetAmount": "499.75",
             }),
         ])
-        success, executed, price, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+        result = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
 
-        assert success and error is None
-        assert executed == Decimal("500.25")
-        assert price == Decimal("1389.33")
+        assert result.status == "filled" and result.error is None
+        assert result.executed_stable == Decimal("500.25")
+        assert result.avg_price_cngn_per_stable == Decimal("1389.33")
+        assert result.trade_ref == "trade-1"
         assert client.post_payloads[0]["side"] == "sell"
         assert client.post_payloads[0]["cngnAmount"] == "695000.000000"
         assert client.post_payloads[0]["idempotencyKey"].startswith("fxm-")
@@ -212,9 +213,9 @@ class TestTradeLifecycle:
         client = self._trading_client([
             _success({"status": "completed", "usdcAmount": "500", "price": "1382.38"}),
         ])
-        success, _, _, _ = await _make_adapter(client).market_buy_cngn(Decimal("500"))
+        result = await _make_adapter(client).market_buy_cngn(Decimal("500"))
 
-        assert success
+        assert result.status == "filled"
         assert client.post_payloads[0]["side"] == "buy"
         # 500 USDC × executable bid (1389.33 × 0.995), rounded down to 6 dp —
         # sizing through the reference ask would overshoot the budget by the spread.
@@ -247,19 +248,19 @@ class TestTradeLifecycle:
         client = self._trading_client([
             _success({"status": "failed", "errorMessage": "insufficient escrow balance"}),
         ])
-        success, executed, price, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+        result = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
 
-        assert not success
-        assert (executed, price) == (Decimal("0"), Decimal("0"))
-        assert error == "insufficient escrow balance"
+        assert result.status == "failed"
+        assert (result.executed_stable, result.avg_price_cngn_per_stable) == (Decimal("0"), Decimal("0"))
+        assert result.error == "insufficient escrow balance"
 
     @pytest.mark.asyncio
     async def test_expired_lock_is_terminal_failure(self):
         client = self._trading_client([_success({"status": "expired", "errorMessage": None})])
-        success, _, _, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+        result = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
 
-        assert not success
-        assert "expired" in error
+        assert result.status == "failed"
+        assert "expired" in result.error
 
     @pytest.mark.asyncio
     async def test_poll_budget_exhaustion_surfaces_trade_id_and_alerts(self):
@@ -269,10 +270,11 @@ class TestTradeLifecycle:
         client = self._trading_client([_success({"status": "settling"})])
         adapter = _make_adapter(client, alert_store=alert_store)
 
-        success, _, _, error = await adapter.market_sell_cngn(Decimal("695000"))
+        result = await adapter.market_sell_cngn(Decimal("695000"))
 
-        assert not success
-        assert "trade-1" in error and "may yet settle" in error
+        assert result.status == "pending", "exhaustion is pending, never a false-negative failure"
+        assert result.trade_ref == "trade-1"
+        assert "may yet settle" in result.error
         alert_store.insert_alert.assert_awaited_once()
         assert alert_store.insert_alert.call_args.kwargs["severity"] == "critical"
 
@@ -289,10 +291,10 @@ class TestTradeLifecycle:
         }], "count": 1})
         client.get_routes["fx/orderbook"] = _LIVE_BOOK
 
-        success, executed, price, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+        result = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
 
-        assert success and error is None
-        assert (executed, price) == (Decimal("500.25"), Decimal("1389.33"))
+        assert result.status == "filled" and result.error is None
+        assert (result.executed_stable, result.avg_price_cngn_per_stable) == (Decimal("500.25"), Decimal("1389.33"))
 
     @pytest.mark.asyncio
     async def test_trade_id_from_nested_trade_object(self):
@@ -301,15 +303,53 @@ class TestTradeLifecycle:
         ])
         client.post_response = _success({"trade": {"tradeId": "trade-1", "status": "pending"}})
 
-        success, _, _, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+        result = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
 
-        assert success and error is None
+        assert result.status == "filled" and result.error is None
+
+    @pytest.mark.asyncio
+    async def test_check_trade_unlisted_is_unresolved(self):
+        """Absence from /fx/trades means unresolved (in-flight trades vanish
+        from the list; observed live 2026-07-13) — never a failure."""
+        client = _FakeClient()
+        client.get_routes["fx/trades"] = _success({"trades": [], "count": 0})
+        assert await _make_adapter(client).check_trade("trade-x") is None
+
+    @pytest.mark.asyncio
+    async def test_check_trade_resolves_completed(self):
+        client = _FakeClient()
+        client.get_routes["fx/trades"] = _success({"trades": [{
+            "tradeId": "trade-x", "status": "completed",
+            "usdcAmount": "9.887413", "price": "1395.71385",
+        }], "count": 1})
+        result = await _make_adapter(client).check_trade("trade-x")
+
+        assert result is not None and result.status == "filled"
+        assert result.executed_stable == Decimal("9.887413")
+
+    @pytest.mark.asyncio
+    async def test_check_trade_resolves_expired_as_failed(self):
+        client = _FakeClient()
+        client.get_routes["fx/trades"] = _success({"trades": [{
+            "tradeId": "trade-x", "status": "expired", "errorMessage": None,
+        }], "count": 1})
+        result = await _make_adapter(client).check_trade("trade-x")
+
+        assert result is not None and result.status == "failed"
+
+    @pytest.mark.asyncio
+    async def test_check_trade_nonterminal_is_unresolved(self):
+        client = _FakeClient()
+        client.get_routes["fx/trades"] = _success({"trades": [{
+            "tradeId": "trade-x", "status": "settling",
+        }], "count": 1})
+        assert await _make_adapter(client).check_trade("trade-x") is None
 
     @pytest.mark.asyncio
     async def test_rejected_order_returns_api_message(self):
         client = _FakeClient()
         client.post_response = {"status": "Failed", "response_code": "02", "message": "NO_LIQUIDITY"}
-        success, _, _, error = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
+        result = await _make_adapter(client).market_sell_cngn(Decimal("695000"))
 
-        assert not success
-        assert error == "NO_LIQUIDITY"
+        assert result.status == "failed"
+        assert result.error == "NO_LIQUIDITY"

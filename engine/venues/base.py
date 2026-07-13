@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Any, Optional, Protocol, TypeGuard
 
-from engine.types import Position, PriceQuote, TxResult
+from engine.types import MarketOrderResult, Position, PriceQuote, TxResult
 
 
 class VenueAdapter(ABC):
@@ -48,21 +48,24 @@ class DexExecutionVenue(Protocol):
 class MarketOrderVenue(Protocol):
     """REST venue that fills cNGN market orders — the execution surface of `api` arb legs.
 
-    Both methods return ``(success, executed_stable, avg_price_cngn_per_stable, error)``:
-    executed volume is always the stablecoin amount, price always cNGN per
+    Executed volume is always the stablecoin amount and price always cNGN per
     stablecoin, regardless of how the exchange denominates the underlying
-    order. Exchange-specific side/volume mapping lives in the adapter.
+    order — exchange-specific mapping lives in the adapter. check_trade
+    resolves a previously placed trade by its trade_ref: a terminal
+    MarketOrderResult, or None while the outcome is still unobservable (the
+    recovery gate for pending results — never retry or reverse past a None).
     """
 
     name: str
 
-    async def market_buy_cngn(self, spend_stable: Decimal) -> tuple[bool, Decimal, Decimal, str | None]: ...
-    async def market_sell_cngn(self, amount_cngn: Decimal) -> tuple[bool, Decimal, Decimal, str | None]: ...
+    async def market_buy_cngn(self, spend_stable: Decimal) -> MarketOrderResult: ...
+    async def market_sell_cngn(self, amount_cngn: Decimal) -> MarketOrderResult: ...
+    async def check_trade(self, trade_ref: str) -> MarketOrderResult | None: ...
 
 
 def is_market_order_venue(venue: VenueAdapter) -> TypeGuard[MarketOrderVenue]:
     """Return True when a venue exposes the cNGN market-order execution surface."""
-    return all(hasattr(venue, attr) for attr in ("market_buy_cngn", "market_sell_cngn"))
+    return all(hasattr(venue, attr) for attr in ("market_buy_cngn", "market_sell_cngn", "check_trade"))
 
 
 class SyncOrderLadderVenue(Protocol):

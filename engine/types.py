@@ -291,6 +291,22 @@ class DexArbOpportunity(BaseModel):
     executed_size_usd: Optional[Decimal] = None
 
 
+class MarketOrderResult(BaseModel):
+    """Result of a cNGN market order on an API venue (MarketOrderVenue).
+
+    status "pending" means the venue accepted the order but its outcome is not
+    observably terminal — the CEX analog of a broadcast-but-unconfirmed tx.
+    trade_ref is the venue's trade identifier; it is recovery-critical for
+    pending results (persisted as the leg's tx_hash) and feeds check_trade.
+    """
+
+    status: Literal["filled", "failed", "pending"]
+    executed_stable: Decimal = Decimal("0")
+    avg_price_cngn_per_stable: Decimal = Decimal("0")
+    trade_ref: Optional[str] = None
+    error: Optional[str] = None
+
+
 class ArbitrageTrade(BaseModel):
     """Individual trade leg of an arbitrage opportunity."""
 

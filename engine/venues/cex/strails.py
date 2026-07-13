@@ -22,7 +22,7 @@ import httpx
 import structlog
 from web3 import Web3
 
-from engine.types import OrderBookDepth, OrderBookLevel, Position, PriceQuote
+from engine.types import MarketOrderResult, OrderBookDepth, OrderBookLevel, Position, PriceQuote
 from engine.db.backend import AlertStoreProtocol
 from engine.venues.base import VenueAdapter
 
@@ -233,13 +233,12 @@ class StrailsAdapter(VenueAdapter):
     # ------------------------------------------------------------------
     # Market-order execution (MarketOrderVenue)
     #
-    # BLOCKED until the account's MPC vault is registered, and gated on a
-    # live canary trade verifying two documented-but-unproven assumptions:
-    # side="buy" acquires cNGN (side refers to the base asset of CNGN-USDC),
-    # and the dynamic token-amount field is the gross stablecoin leg.
+    # Semantics verified with live canary trades 2026-07-13 (both directions):
+    # side refers to cNGN, fills are gross and exact, fees accrue without
+    # deduction, and settlement takes ~1-2.5 min under Manual approval.
     # ------------------------------------------------------------------
 
-    async def market_buy_cngn(self, spend_stable: Decimal) -> tuple[bool, Decimal, Decimal, str | None]:
+    async def market_buy_cngn(self, spend_stable: Decimal) -> MarketOrderResult:
         """Acquire cNGN by spending `spend_stable` stablecoin.
 
         StablesRail denominates market orders in cNGN, so the stablecoin
@@ -248,19 +247,59 @@ class StrailsAdapter(VenueAdapter):
         """
         quote = await self.get_current_price()
         if quote is None or quote.bid <= 0:
-            return False, Decimal("0"), Decimal("0"), f"no {self.pair} bid price available"
+            return MarketOrderResult(status="failed", error=f"no {self.pair} bid price available")
         cngn_amount = (spend_stable * quote.bid).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
         return await self._execute_market_order("buy", cngn_amount)
 
-    async def market_sell_cngn(self, amount_cngn: Decimal) -> tuple[bool, Decimal, Decimal, str | None]:
+    async def market_sell_cngn(self, amount_cngn: Decimal) -> MarketOrderResult:
         """Dispose of `amount_cngn` cNGN for stablecoin. Volume is cNGN natively."""
         return await self._execute_market_order(
             "sell", amount_cngn.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
         )
 
-    async def _execute_market_order(
-        self, side: str, cngn_amount: Decimal
-    ) -> tuple[bool, Decimal, Decimal, str | None]:
+    async def check_trade(self, trade_ref: str) -> MarketOrderResult | None:
+        """Resolve a previously placed trade by id, or None while unresolved.
+
+        In-flight trades can be entirely absent from /fx/trades until they
+        settle (observed 2026-07-13, reverse canary) — absence therefore means
+        "still unresolved", never "failed".
+        """
+        try:
+            listing = await self._get("fx/trades", {"pair": self.pair, "limit": 50})
+        except Exception as e:
+            logger.warning("strails_check_trade_failed", trade_ref=trade_ref, error=str(e))
+            return None
+        row = next((t for t in listing.get("trades", []) if str(t.get("tradeId")) == trade_ref), None)
+        if row is None:
+            return None
+        return self._result_from_trade_row(row, trade_ref)
+
+    def _result_from_trade_row(self, row: dict[str, Any], trade_id: str) -> MarketOrderResult | None:
+        """Map a trades-list row to a terminal MarketOrderResult; None if non-terminal."""
+        status = str(row.get("status", "unknown"))
+        if status not in _TERMINAL_TRADE_STATUSES:
+            return None
+        if status == "completed":
+            executed_stable = Decimal(str(row.get(self._token_amount_field, "0") or "0"))
+            avg_price = Decimal(str(row.get("price", "0") or "0"))
+            if executed_stable <= 0 or avg_price <= 0:
+                # Money moved but fills unreadable — pending keeps the trade
+                # alive for the resolution gate instead of faking a failure.
+                return MarketOrderResult(
+                    status="pending",
+                    trade_ref=trade_id,
+                    error=f"trade {trade_id} completed but fill fields missing — reconcile manually",
+                )
+            return MarketOrderResult(
+                status="filled",
+                executed_stable=executed_stable,
+                avg_price_cngn_per_stable=avg_price,
+                trade_ref=trade_id,
+            )
+        error = str(row.get("errorMessage") or f"trade {status}")
+        return MarketOrderResult(status="failed", trade_ref=trade_id, error=error)
+
+    async def _execute_market_order(self, side: str, cngn_amount: Decimal) -> MarketOrderResult:
         client = await self._get_client()
         payload = {
             "pair": self.pair,
@@ -274,10 +313,10 @@ class StrailsAdapter(VenueAdapter):
             response = await client.post(f"{self.base_url}/fx/market-order", json=payload)
             resp_json: dict[str, Any] = response.json()
         except Exception as e:
-            return False, Decimal("0"), Decimal("0"), str(e)
+            return MarketOrderResult(status="failed", error=str(e))
 
         if resp_json.get("status") != "Success":
-            return False, Decimal("0"), Decimal("0"), str(resp_json.get("message", "Unknown Strails error"))
+            return MarketOrderResult(status="failed", error=str(resp_json.get("message", "Unknown Strails error")))
 
         data = resp_json.get("data", {})
         trade_id = str(data.get("tradeId") or (data.get("trade") or {}).get("tradeId") or "")
@@ -289,13 +328,11 @@ class StrailsAdapter(VenueAdapter):
             logger.warning("strails_market_order_missing_trade_id", side=side, data_keys=sorted(data.keys()))
             trade_id = await self._reconcile_trade_id(side, str(cngn_amount))
         if not trade_id:
-            # Order accepted but untrackable — alert loudly; a live trade may exist.
-            await self.alert_store.insert_alert(
-                severity="critical",
-                category="cex",
-                message=f"Strails {self.name} market {side} accepted without a tradeId — reconcile manually",
-            )
-            return False, Decimal("0"), Decimal("0"), "market order accepted without tradeId"
+            # Order accepted but untrackable — a live trade may exist (proven
+            # possible by the 2026-07-13 canary), so this is pending, not failed.
+            message = f"Strails {self.name} market {side} accepted without a tradeId — reconcile manually"
+            await self.alert_store.insert_alert(severity="critical", category="cex", message=message)
+            return MarketOrderResult(status="pending", error=message)
 
         return await self._await_trade_terminal(trade_id, side)
 
@@ -313,20 +350,18 @@ class StrailsAdapter(VenueAdapter):
                 return trade_id
         return ""
 
-    async def _await_trade_terminal(
-        self, trade_id: str, side: str
-    ) -> tuple[bool, Decimal, Decimal, str | None]:
-        """Poll /fx/trade/status until the escrow lifecycle reaches a terminal state.
+    async def _await_trade_terminal(self, trade_id: str, side: str) -> MarketOrderResult:
+        """Poll the trades list until the escrow lifecycle reaches a terminal state.
 
         Lifecycle: pending → locked → signing → settling → completed | failed |
-        expired (5-minute price lock). A budget exhaustion is NOT a definitive
-        failure — the trade may still settle — so it alerts critically and
-        reports the tradeId for manual resolution. Automatic resolution of
-        stuck trades (the CEX analog of the DEX pending-sell recovery gate)
-        must exist before this venue joins the route registry.
+        expired (5-minute price lock). Budget exhaustion is NOT a failure — the
+        trade may still settle (in-flight trades can be absent from the list
+        entirely; observed 2026-07-13) — so it returns status "pending" with
+        the trade_ref, which routes the leg into half-open and the check_trade
+        resolution gate instead of a false-negative failure.
         """
         deadline = time.monotonic() + _TRADE_POLL_BUDGET_SECONDS
-        status = "unknown"
+        last_status = "unknown"
         fetch_errors = 0
         polls_without_listing = 0
         while time.monotonic() < deadline:
@@ -340,42 +375,33 @@ class StrailsAdapter(VenueAdapter):
                 fetch_errors += 1
                 logger.warning("strails_trade_status_poll_failed", trade_id=trade_id, error=str(e))
                 continue
-            data = next(
+            row = next(
                 (t for t in listing.get("trades", []) if str(t.get("tradeId")) == trade_id),
                 None,
             )
-            if data is None:
-                # Observed 2026-07-13 (reverse canary): an in-flight trade can be
-                # absent from the list for its entire settlement window.
+            if row is None:
                 polls_without_listing += 1
                 continue
-            status = str(data.get("status", "unknown"))
-            if status not in _TERMINAL_TRADE_STATUSES:
+            last_status = str(row.get("status", "unknown"))
+            result = self._result_from_trade_row(row, trade_id)
+            if result is None:
                 continue
-            if status == "completed":
-                executed_stable = Decimal(str(data.get(self._token_amount_field, "0") or "0"))
-                avg_price = Decimal(str(data.get("price", "0") or "0"))
-                logger.info(
-                    "strails_trade_completed",
-                    trade_id=trade_id,
-                    side=side,
-                    executed_stable=float(executed_stable),
-                    price=float(avg_price),
-                    net_amount=data.get("fintechNetAmount"),
-                )
-                if executed_stable <= 0 or avg_price <= 0:
-                    return False, Decimal("0"), Decimal("0"), (
-                        f"trade {trade_id} completed but fill fields missing — reconcile manually"
-                    )
-                return True, executed_stable, avg_price, None
-            error = str(data.get("errorMessage") or f"trade {status}")
-            logger.error("strails_trade_failed", trade_id=trade_id, side=side, status=status, error=error)
-            return False, Decimal("0"), Decimal("0"), error
+            log_fn = logger.info if result.status == "filled" else logger.error
+            log_fn(
+                "strails_trade_terminal",
+                trade_id=trade_id,
+                side=side,
+                status=result.status,
+                executed_stable=float(result.executed_stable),
+                price=float(result.avg_price_cngn_per_stable),
+                error=result.error,
+            )
+            return result
 
         message = (
-            f"Strails trade {trade_id} still '{status}' after {int(_TRADE_POLL_BUDGET_SECONDS)}s "
+            f"Strails trade {trade_id} still '{last_status}' after {int(_TRADE_POLL_BUDGET_SECONDS)}s "
             f"({polls_without_listing} polls without the trade listed, {fetch_errors} fetch errors) — "
-            f"it may yet settle; check {trade_id} in /fx/trades before any retry"
+            f"it may yet settle; resolution gate will re-check before any retry"
         )
         await self.alert_store.insert_alert(severity="critical", category="cex", message=message)
-        return False, Decimal("0"), Decimal("0"), message
+        return MarketOrderResult(status="pending", trade_ref=trade_id, error=message)

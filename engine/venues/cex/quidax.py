@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional, cast
 import httpx
 import structlog
 
-from engine.types import CexParams, OrderBookDepth, OrderBookLevel, Position, PriceQuote, VenueOrderSummary
+from engine.types import CexParams, MarketOrderResult, OrderBookDepth, OrderBookLevel, Position, PriceQuote, VenueOrderSummary
 from engine.db.backend import AlertStoreProtocol, SystemStateStoreProtocol
 from engine.venues.base import VenueAdapter
 from engine.venues.cex.ladder_planner import (
@@ -44,6 +44,18 @@ def _fill_decimal(value: Any) -> Decimal:
         return Decimal(str(raw))
     except (InvalidOperation, ValueError, TypeError):
         return Decimal("0")
+
+
+def _market_order_result(
+    success: bool, executed_usdt: Decimal, avg_price: Decimal, error: str | None
+) -> MarketOrderResult:
+    # Quidax market orders fill synchronously — there is no pending state.
+    return MarketOrderResult(
+        status="filled" if success else "failed",
+        executed_stable=executed_usdt,
+        avg_price_cngn_per_stable=avg_price,
+        error=error,
+    )
 
 
 def _extract_market_fill(data: dict[str, Any]) -> tuple[Decimal, Decimal]:
@@ -751,16 +763,16 @@ class QuidaxAdapter(VenueAdapter):
 
         return result
 
-    async def market_buy_cngn(self, spend_stable: Decimal) -> tuple[bool, Decimal, Decimal, str | None]:
+    async def market_buy_cngn(self, spend_stable: Decimal) -> MarketOrderResult:
         """Acquire cNGN by spending `spend_stable` USDT.
 
         The usdtcngn market is base-USDT, so acquiring cNGN is a USDT *sell*
         sized in USDT (base). Denomination contract in place_market_order;
         mapping pinned in tests/test_quidax_adapter.py.
         """
-        return await self.place_market_order("sell", spend_stable)
+        return _market_order_result(*await self.place_market_order("sell", spend_stable))
 
-    async def market_sell_cngn(self, amount_cngn: Decimal) -> tuple[bool, Decimal, Decimal, str | None]:
+    async def market_sell_cngn(self, amount_cngn: Decimal) -> MarketOrderResult:
         """Dispose of `amount_cngn` cNGN by *buying* USDT.
 
         Quidax denominates a market-buy volume in the quote asset (cNGN), so
@@ -768,7 +780,27 @@ class QuidaxAdapter(VenueAdapter):
         never exceeds the buy-leg holdings. A USDT-sized volume here caused the
         July 2026 half-open failures (error 110112).
         """
-        return await self.place_market_order("buy", amount_cngn)
+        return _market_order_result(*await self.place_market_order("buy", amount_cngn))
+
+    async def check_trade(self, trade_ref: str) -> MarketOrderResult | None:
+        """Resolve a Quidax order by id (MarketOrderVenue recovery surface).
+
+        Quidax market orders fill synchronously, so pending results never
+        originate here; this exists so the recovery gate works uniformly
+        across API venues.
+        """
+        status, order = await self._api.fetch_order_by_id(trade_ref)
+        if status != "found" or order is None or not is_order_terminal(order):
+            return None
+        executed_usdt, avg_price = _extract_market_fill(order)
+        if executed_usdt > 0 and avg_price > 0:
+            return MarketOrderResult(
+                status="filled",
+                executed_stable=executed_usdt,
+                avg_price_cngn_per_stable=avg_price,
+                trade_ref=trade_ref,
+            )
+        return MarketOrderResult(status="failed", trade_ref=trade_ref, error=f"order {trade_ref} terminal without fill")
 
     async def place_market_order(
         self,

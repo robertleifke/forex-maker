@@ -6,10 +6,19 @@ Importable from both conftest.py and test modules.
 from decimal import Decimal
 from types import SimpleNamespace
 
-from engine.types import LPPosition, Position, TxResult
+from engine.types import LPPosition, MarketOrderResult, Position, TxResult
 from tests.conftest_params import make_dex_params
 from engine.venues.dex.v4 import BaseV4DexAdapter
 from engine.venues.dex.shared import PositionState
+
+
+def _result(success: bool, executed: Decimal, price: Decimal, error) -> MarketOrderResult:
+    return MarketOrderResult(
+        status="filled" if success else "failed",
+        executed_stable=executed,
+        avg_price_cngn_per_stable=price,
+        error=error,
+    )
 
 
 class _DummyBalanceCall:
@@ -195,11 +204,14 @@ class FakeCexAdapter:
         return False, Decimal("0"), self._avg_price, f"simulated {side} failure"
 
     # MarketOrderVenue surface, mirroring QuidaxAdapter's mapping.
-    async def market_buy_cngn(self, spend_stable: Decimal):
-        return await self.place_market_order("sell", spend_stable)
+    async def market_buy_cngn(self, spend_stable: Decimal) -> MarketOrderResult:
+        return _result(*await self.place_market_order("sell", spend_stable))
 
-    async def market_sell_cngn(self, amount_cngn: Decimal):
-        return await self.place_market_order("buy", amount_cngn)
+    async def market_sell_cngn(self, amount_cngn: Decimal) -> MarketOrderResult:
+        return _result(*await self.place_market_order("buy", amount_cngn))
+
+    async def check_trade(self, trade_ref: str) -> MarketOrderResult | None:
+        return None
 
 
 # Register FakeDexAdapter as a virtual subclass of BaseV4DexAdapter so that

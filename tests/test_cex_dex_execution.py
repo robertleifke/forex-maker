@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from eth_abi import encode
 
-from engine.types import ArbitrageParams, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
+from engine.types import ArbitrageParams, MarketOrderResult, TxResult, PriceQuote, OrderBookDepth, OrderBookLevel
 from engine.arb.engine import ArbitrageEngine
 from engine.arb.routing.route_registry import ROUTES_BY_DIRECTION
 from engine.arb.routing.router import RouteCandidate, SelectedRoute
@@ -76,9 +76,12 @@ class FakeV4Venue:
 class FakeCexVenue:
     """CEX venue double for CEX-DEX buy-leg tests."""
 
-    def __init__(self, buy_ok=True):
+    def __init__(self, buy_ok=True, sell_pending=False, check_result=None):
         self.buy_calls = []
+        self.check_calls = []
         self._buy_ok = buy_ok
+        self._sell_pending = sell_pending  # order accepted, outcome unobservable
+        self._check_result = check_result  # None = still unresolved
 
     async def place_market_order(self, side, volume):
         # Quidax usdtcngn market: sell volume is USDT (base), buy volume is cNGN
@@ -90,10 +93,27 @@ class FakeCexVenue:
 
     # MarketOrderVenue surface, mirroring QuidaxAdapter's mapping.
     async def market_buy_cngn(self, spend_stable):
-        return await self.place_market_order("sell", spend_stable)
+        success, executed, price, error = await self.place_market_order("sell", spend_stable)
+        return MarketOrderResult(
+            status="filled" if success else "failed",
+            executed_stable=executed, avg_price_cngn_per_stable=price, error=error,
+        )
 
     async def market_sell_cngn(self, amount_cngn):
-        return await self.place_market_order("buy", amount_cngn)
+        if self._sell_pending:
+            return MarketOrderResult(
+                status="pending", trade_ref="trade-pending-1",
+                error="still 'settling' after poll budget",
+            )
+        success, executed, price, error = await self.place_market_order("buy", amount_cngn)
+        return MarketOrderResult(
+            status="filled" if success else "failed",
+            executed_stable=executed, avg_price_cngn_per_stable=price, error=error,
+        )
+
+    async def check_trade(self, trade_ref):
+        self.check_calls.append(trade_ref)
+        return self._check_result
 
 
 def _cex_dex_route(direction="QUIDAX_TO_UNI_BASE", size=Decimal("500")):
@@ -323,6 +343,104 @@ class TestCexDexUnconfirmedSell:
 
         assert cex_venue.buy_calls == [], "no CEX reversal while the DEX sell may still land"
         assert sell_venue.check_calls[-1] == ("0xpendingtx", sell_venue.stable_address)
+
+
+# =============================================================================
+# Pending CEX sell (poll-exhausted API leg) — false-negative prevention
+# =============================================================================
+
+class TestCexPendingSell:
+    """A poll-exhausted API sell is 'pending', never 'failed': the trade may
+    settle after the budget (proven live 2026-07-13). It must go half-open with
+    the venue trade id persisted, and recovery must resolve it via check_trade
+    before any reversal."""
+
+    def _dex_to_cex_route(self, size=Decimal("500")):
+        candidate = RouteCandidate(
+            direction="UNI_BASE_TO_QUIDAX",
+            buy_venue="uni-base",
+            sell_venue="quidax",
+            optimal_size_usd=size,
+            expected_profit_usd=Decimal("1.50"),
+            gas_usd=Decimal("0.05"),
+            signal={
+                "optimal_arb": {"slippage_tolerance_bps": 10, "net_spread_bps": 30},
+                "prices": {"quidax": "0.00061", "uni-base": "0.00059"},
+            },
+        )
+        return SelectedRoute(
+            candidate=candidate, adjusted_size_usd=size,
+            net_profit_usd=Decimal("1.45"), expected_profit_usd=Decimal("1.50"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_pending_cex_sell_goes_half_open_with_trade_ref(self, test_db):
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        cex_venue = FakeCexVenue(sell_pending=True)
+        venues = {"quidax": cex_venue, "uni-base": buy_venue}
+
+        engine, alerts = _make_engine(venues, test_db)
+        route = self._dex_to_cex_route()
+        opp_id = "opp-cex-pending-api-sell"
+        await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id)
+
+        opp = await test_db.arbitrage.get_arbitrage_opportunity(opp_id)
+        assert opp is not None
+        assert opp.status == "half_open"
+        assert opp.sell_tx_hash == "trade-pending-1"
+        assert engine.inventory._state.circuit_breaker_active
+
+    async def _half_open_with_pending_sell(self, test_db, cex_venue, buy_venue):
+        engine, alerts = _make_engine({"quidax": cex_venue, "uni-base": buy_venue}, test_db)
+        route = self._dex_to_cex_route()
+        opp_id = "opp-cex-pending-recover-api"
+        await engine._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id)
+        engine.inventory._state.circuit_breaker_active = False
+        # Drop the execution-phase buy swap so assertions see only recovery activity.
+        buy_venue.swap_calls.clear()
+        return engine, opp_id
+
+    @pytest.mark.asyncio
+    async def test_recover_refuses_while_trade_unresolved(self, test_db):
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        cex_venue = FakeCexVenue(sell_pending=True, check_result=None)
+        engine, opp_id = await self._half_open_with_pending_sell(test_db, cex_venue, buy_venue)
+
+        with pytest.raises(ValueError, match="sell twice"):
+            await engine.recover_cex_half_open(opp_id)
+
+        assert cex_venue.check_calls == ["trade-pending-1"]
+        assert buy_venue.swap_calls == [], "no reversal while the sell may still fill"
+
+    @pytest.mark.asyncio
+    async def test_recover_completes_when_pending_trade_filled(self, test_db):
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        filled = MarketOrderResult(
+            status="filled", executed_stable=Decimal("501.25"),
+            avg_price_cngn_per_stable=Decimal("1639.34"), trade_ref="trade-pending-1",
+        )
+        cex_venue = FakeCexVenue(sell_pending=True, check_result=filled)
+        engine, opp_id = await self._half_open_with_pending_sell(test_db, cex_venue, buy_venue)
+
+        result = await engine.recover_cex_half_open(opp_id)
+
+        assert result["method"] == "sell_landed"
+        assert result["status"] == "completed"
+        assert buy_venue.swap_calls == [], "no reversal after the sell actually filled"
+        done = await test_db.arbitrage.get_arbitrage_opportunity(opp_id)
+        assert done.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_recover_reverses_after_terminal_failure(self, test_db):
+        buy_venue = FakeV4Venue("uni-base", sim_result=None, swap_ok=True)
+        failed = MarketOrderResult(status="failed", trade_ref="trade-pending-1", error="trade expired")
+        cex_venue = FakeCexVenue(sell_pending=True, check_result=failed)
+        engine, opp_id = await self._half_open_with_pending_sell(test_db, cex_venue, buy_venue)
+
+        result = await engine.recover_cex_half_open(opp_id)
+
+        assert result["method"] == "reverse_dex_buy"
+        assert len(buy_venue.swap_calls) == 1, "definitive failure → reverse the DEX buy"
 
 
 # =============================================================================

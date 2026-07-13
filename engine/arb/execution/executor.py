@@ -3,11 +3,11 @@
 import re
 import time
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import structlog
 
-from engine.types import ArbitrageTrade
+from engine.types import ArbitrageTrade, MarketOrderResult
 from engine.venues.base import VenueAdapter, is_dex_execution_venue, is_market_order_venue
 
 logger = structlog.get_logger()
@@ -88,6 +88,14 @@ _ARB_SLIPPAGE_BPS = 10  # 0.1% — matches optimizer assumption in cex_dex.py / 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _leg_status(result: "MarketOrderResult") -> Literal["pending", "submitted", "failed"]:
+    if result.status == "filled":
+        return "submitted"
+    if result.status == "pending":
+        return "pending"
+    return "failed"
 
 
 def _dex_execution_slippage(venue: object) -> Decimal:
@@ -209,11 +217,13 @@ class ArbitrageExecutor:
         if not is_market_order_venue(venue):
             raise TypeError(f"{venue_name} is not a market-order venue")
 
-        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.market_buy_cngn(amount_usd)
-        if success and avg_price_cngn_per_usdt > 0:
-            executed_cngn = executed_usdt * avg_price_cngn_per_usdt
-            realized_price = Decimal(1) / avg_price_cngn_per_usdt
+        result = await venue.market_buy_cngn(amount_usd)
+        if result.status == "filled" and result.avg_price_cngn_per_stable > 0:
+            executed_cngn = result.executed_stable * result.avg_price_cngn_per_stable
+            realized_price = Decimal(1) / result.avg_price_cngn_per_stable
         else:
+            # Failed, pending (fills unknowable yet), or filled without fill
+            # data: the signal-price estimate is the recovery-sizing fallback.
             executed_cngn = amount_usd / price_usd_per_cngn
             realized_price = price_usd_per_cngn
         return ArbitrageTrade(
@@ -223,9 +233,13 @@ class ArbitrageExecutor:
             side="buy",
             amount=executed_cngn,
             price=realized_price,
-            status="submitted" if success else "failed",
+            # The venue trade id rides in tx_hash: it is the recovery handle a
+            # pending API leg resolves through (check_trade), exactly as a DEX
+            # leg resolves through its transaction hash.
+            tx_hash=result.trade_ref,
+            status=_leg_status(result),
             timestamp=_now_ms(),
-            error=error,
+            error=result.error,
         )
 
     async def execute_cex_sell(
@@ -245,10 +259,10 @@ class ArbitrageExecutor:
         if not is_market_order_venue(venue):
             raise TypeError(f"{venue_name} is not a market-order venue")
 
-        success, executed_usdt, avg_price_cngn_per_usdt, error = await venue.market_sell_cngn(amount_cngn)
-        if success and avg_price_cngn_per_usdt > 0:
-            executed_cngn = executed_usdt * avg_price_cngn_per_usdt
-            realized_price = Decimal(1) / avg_price_cngn_per_usdt
+        result = await venue.market_sell_cngn(amount_cngn)
+        if result.status == "filled" and result.avg_price_cngn_per_stable > 0:
+            executed_cngn = result.executed_stable * result.avg_price_cngn_per_stable
+            realized_price = Decimal(1) / result.avg_price_cngn_per_stable
         else:
             executed_cngn = amount_cngn
             realized_price = price_usd_per_cngn
@@ -259,7 +273,8 @@ class ArbitrageExecutor:
             side="sell",
             amount=executed_cngn,
             price=realized_price,
-            status="submitted" if success else "failed",
+            tx_hash=result.trade_ref,
+            status=_leg_status(result),
             timestamp=_now_ms(),
-            error=error,
+            error=result.error,
         )

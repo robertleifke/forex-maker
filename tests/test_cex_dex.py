@@ -35,6 +35,61 @@ def _make_depth(bid_price: float, ask_price: float, amount: float = 10000.0) -> 
 _TIGHT_DEPTH = _make_depth(bid_price=1650, ask_price=1640)
 
 
+class TestRegistryDrivenDetection:
+    """Directions come from the route registry per CEX venue — a venue trades
+    exactly its registered routes and nothing else."""
+
+    def test_quidax_has_all_four_directions(self):
+        from engine.arb.detection.cex_dex import cex_directions_for
+        directions = {d for d, _, _ in cex_directions_for("quidax")}
+        assert directions == {
+            "QUIDAX_TO_UNI_BSC", "UNI_BSC_TO_QUIDAX",
+            "QUIDAX_TO_UNI_BASE", "UNI_BASE_TO_QUIDAX",
+        }
+
+    def test_strails_registered_for_base_only(self):
+        """StablesRail settles on Base; no cross-chain BSC routes are registered."""
+        from engine.arb.detection.cex_dex import cex_directions_for
+        assert cex_directions_for("strails") == [
+            ("STRAILS_TO_UNI_BASE", "uni-base", True),
+            ("UNI_BASE_TO_STRAILS", "uni-base", False),
+        ]
+
+    def test_strails_fee_is_zero(self):
+        """Verified against live fills 2026-07-13: fees accrue without deduction."""
+        from engine.arb.detection.cex_dex import CEX_TAKER_FEES
+        assert CEX_TAKER_FEES["strails"] == Decimal("0")
+
+    def test_unknown_venue_yields_no_signal(self, seeded_pool_cache):
+        depth = OrderBookDepth(
+            venue="unregistered-cex", pair="cNGN/USDC", timestamp=0,
+            bids=[_level(1650, 10000)], asks=[_level(1640, 10000)],
+        )
+        assert find_optimal_arb(depth) is None
+
+    def test_strails_depth_emits_only_registered_directions(self, seeded_pool_cache):
+        depth = OrderBookDepth(
+            venue="strails", pair="cNGN/USDC", timestamp=0,
+            bids=[_level(1650, 10000)], asks=[_level(1640, 10000)],
+        )
+        result = find_optimal_arb(depth)
+        assert result is not None
+        emitted = {arb["direction"] for arb in result["all_arbs"]}
+        assert emitted <= {"STRAILS_TO_UNI_BASE", "UNI_BASE_TO_STRAILS"}
+        assert "strails" in result["prices"]
+
+    def test_estimate_cex_dex_trade_resolves_strails_direction(self, seeded_pool_cache):
+        depth = OrderBookDepth(
+            venue="strails", pair="cNGN/USDC", timestamp=0,
+            bids=[_level(1650, 10000)], asks=[_level(1640, 10000)],
+        )
+        trade = estimate_cex_dex_trade("STRAILS_TO_UNI_BASE", depth, Decimal("100"), Decimal("0"))
+        assert trade is not None
+        assert trade["cngn_transferred"] > 0
+        assert estimate_cex_dex_trade("STRAILS_TO_UNI_BSC", depth, Decimal("100")) is None, \
+            "unregistered directions must not price"
+
+
 class TestFindOptimalArbNullCases:
     """find_optimal_arb returns None when preconditions are not met."""
 

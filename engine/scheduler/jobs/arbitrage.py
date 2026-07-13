@@ -143,6 +143,40 @@ class ArbitrageJobs:
                 self.state.quidax_depth_ok = False
                 logger.warning("quidax_depth_fetch_error", error=str(exc))
 
+    async def stream_strails_depth(self) -> None:
+        """Poll StablesRail executable depth and drive CEX-DEX detection.
+
+        Reconciles the venue's live inventory (smart-wallet balances via
+        get_position) before each tick so the router sizes against fresh
+        numbers — Strails has no account-manager role, unlike Quidax.
+        """
+        try:
+            strails = self.context.venues.get("strails")
+            if not strails:
+                return
+
+            depth = await cast(DepthVenue, strails).get_order_book_depth(limit=20)
+            if not depth or not depth.bids or not depth.asks:
+                if self.state.strails_depth_ok:
+                    self.state.strails_depth_ok = False
+                    logger.warning("strails_depth_unavailable")
+                return
+            if not self.state.strails_depth_ok:
+                self.state.strails_depth_ok = True
+                logger.info("strails_depth_restored")
+
+            engine = self.context.arbitrage_engine
+            if engine:
+                position = await cast(DepthVenue, strails).get_position()
+                from decimal import Decimal
+                engine.inventory.reconcile_stables({"strails": position.balances.get("usdc", Decimal(0))})
+                engine.inventory.reconcile_cngn({"strails": position.balances.get("cngn", Decimal(0))})
+                await engine.on_cex_dex_depth(depth, [])
+        except Exception as exc:
+            logger.error("strails_depth_stream_failed", error=str(exc))
+            if self.state.strails_depth_ok:
+                self.state.strails_depth_ok = False
+
     async def handle_wallet_activity(self, venue_names: list[str]) -> None:
         if self.context.arbitrage_engine:
             await self.context.arbitrage_engine.on_wallet_activity(venue_names)

@@ -79,6 +79,10 @@ class Settings(BaseSettings):
 
     # Venue API keys
     quidax_api_key: str = Field(default="", description="Quidax API key (authenticates the operator)")
+    strails_api_key: str = Field(default="", description="StablesRail API key (x-api-key header)")
+    strails_proxy: str = Field(default="", description="SOCKS proxy for StablesRail calls only (dev tunnels via the allowlisted VPS)")
+    strails_smart_wallet_address: str = Field(default="", description="StablesRail smart wallet on Base — trades debit this; funding target")
+    strails_destination_wallet: str = Field(default="", description="Registered external wallet receiving settled tokens (destinationWalletAddress)")
     quidax_user_id: str = Field(default="me", description="Quidax trade/arb sub-account user id")
     quidax_lp_user_id: str = Field(default="", description="Quidax LP account user id; leave empty to disable LP venue")
     quidax_trade_address: str = Field(default="", description="Quidax arb account deposit address")

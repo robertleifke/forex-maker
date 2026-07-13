@@ -113,7 +113,7 @@ class TestSelectRouteEdgeCases:
         monkeypatch.setattr(
             _router,
             "estimate_cex_dex_trade",
-            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10")},
+            lambda direction, depth, investment_usd, cex_fee=None: {"expected_profit_usd": Decimal("10")},
         )
         inv = _make_inventory(per_account={"quidax": 100}, cngn_per_account={"uni-base": 5_000_000})
         c = _make_candidate(size_usd=500.0, profit_usd=10.0)
@@ -126,7 +126,7 @@ class TestSelectRouteEdgeCases:
         monkeypatch.setattr(
             _router,
             "estimate_cex_dex_trade",
-            lambda direction, depth, investment_usd: {"expected_profit_usd": Decimal("10")},
+            lambda direction, depth, investment_usd, cex_fee=None: {"expected_profit_usd": Decimal("10")},
         )
         inv = _make_inventory(
             per_account={"quidax": 500},
@@ -259,7 +259,7 @@ class TestSelectRouteNetProfit:
             gas_usd=0.07,
         )
 
-        def _fake_estimate(direction, depth, investment_usd):
+        def _fake_estimate(direction, depth, investment_usd, cex_fee=None):
             assert direction == "QUIDAX_TO_UNI_BASE"
             assert depth == c.signal["depth"]["quidax"]
             assert investment_usd == Decimal("100")
@@ -285,13 +285,13 @@ class TestSelectRouteNetProfit:
             signal={"depth": {"quidax": _default_depth()}},
         )
 
-        def _fake_exact_cap(direction, depth, wallet_cngn):
+        def _fake_exact_cap(direction, depth, wallet_cngn, cex_fee=None):
             assert direction == "UNI_BASE_TO_QUIDAX"
             assert depth == c.signal["depth"]["quidax"]
             assert wallet_cngn == Decimal("1000000")
             return {"optimal_size_usd": 100.0, "expected_profit_usd": 2.0, "cngn_transferred": 140000.0}
 
-        def _fake_estimate(direction, depth, investment_usd):
+        def _fake_estimate(direction, depth, investment_usd, cex_fee=None):
             assert direction == "UNI_BASE_TO_QUIDAX"
             assert depth == c.signal["depth"]["quidax"]
             assert investment_usd == Decimal("100")
@@ -321,7 +321,7 @@ class TestSelectRouteNetProfit:
             signal={"depth": {"quidax": _default_depth()}},
         )
 
-        monkeypatch.setattr(_router, "estimate_max_cex_dex_buy_usd_for_cngn", lambda direction, depth, wallet_cngn: None)
+        monkeypatch.setattr(_router, "estimate_max_cex_dex_buy_usd_for_cngn", lambda direction, depth, wallet_cngn, cex_fee=None: None)
 
         assert select_route([c], inv) is None
 
@@ -338,11 +338,11 @@ class TestSelectRouteTiebreak:
 
     def test_inventory_alignment_tiebreak_long_cngn(self, monkeypatch):
         """When long cNGN (imbalance > threshold), prefer selling cNGN to CEX."""
-        monkeypatch.setattr(_router, "estimate_max_cex_buy_usd_for_cngn", lambda depth, wallet_cngn: Decimal("200"))
+        monkeypatch.setattr(_router, "estimate_max_cex_buy_usd_for_cngn", lambda depth, wallet_cngn, cex_fee=None: Decimal("200"))
         monkeypatch.setattr(
             _router,
             "estimate_max_cex_dex_buy_usd_for_cngn",
-            lambda direction, depth, wallet_cngn: {
+            lambda direction, depth, wallet_cngn, cex_fee=None: {
                 "optimal_size_usd": Decimal("200"),
                 "expected_profit_usd": Decimal("5"),
                 "cngn_transferred": Decimal("100"),

@@ -41,7 +41,7 @@ engine/arb/routing/route_registry.py is the sole source of truth for direction, 
 select_route() produces a decision (ranking, adjusted size, rescored profit, inventory tiebreaking). SelectedRoute holds routed size and profit metadata only — no execution-time token amounts or live state.
 Inventory
 
-Inventory is venue-local. quidax, uni-base, uni-bsc balances are independent and capped independently. A fill on one venue makes nothing available on another.
+Inventory is venue-local. quidax, strails, uni-base, uni-bsc balances are independent and capped independently. A fill on one venue makes nothing available on another.
 Router caps protect both legs: buy-side stablecoin and sell-side cNGN.
 Serialization
 

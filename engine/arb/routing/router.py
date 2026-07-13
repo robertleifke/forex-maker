@@ -9,6 +9,8 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from engine.arb.detection.cex_dex import (
+    CEX_TAKER_FEES,
+    QUIDAX_FEE,
     estimate_cex_dex_trade,
     estimate_max_cex_buy_usd_for_cngn,
     estimate_max_cex_dex_buy_usd_for_cngn,
@@ -58,6 +60,7 @@ def select_route(
             continue
         cex_venue = route_def.buy_leg.venue if route_def.buy_leg.leg_type == "api" else route_def.sell_leg.venue
         cex_depth = c.signal.get("depth", {}).get(cex_venue)
+        cex_fee = CEX_TAKER_FEES.get(cex_venue, QUIDAX_FEE)
 
         # Block if buy-side stablecoin balance is unknown or zero — mirrors cNGN check below.
         stable_bal = inventory.state.per_account_stable.get(c.buy_venue)
@@ -77,7 +80,7 @@ def select_route(
             # CEX buy → DEX sell: cap against what the CEX orderbook can absorb for our cNGN
             adjusted_size = min(
                 adjusted_size,
-                estimate_max_cex_buy_usd_for_cngn(cex_depth, cngn_bal),
+                estimate_max_cex_buy_usd_for_cngn(cex_depth, cngn_bal, cex_fee),
             )
         elif route_def.cngn_effect == "neutral":
             # DEX → DEX: binary-search the exact buy-side USD that exhausts sell-side cNGN
@@ -87,7 +90,7 @@ def select_route(
             adjusted_size = min(adjusted_size, Decimal(str(sell_cngn_cap_trade["optimal_size_usd"])))
         else:
             # DEX buy → CEX sell: exact reverse cap from DEX buy output to sell-side cNGN wallet.
-            sell_cngn_cap_trade = estimate_max_cex_dex_buy_usd_for_cngn(c.direction, cex_depth, cngn_bal)
+            sell_cngn_cap_trade = estimate_max_cex_dex_buy_usd_for_cngn(c.direction, cex_depth, cngn_bal, cex_fee)
             if not sell_cngn_cap_trade:
                 continue
             adjusted_size = min(adjusted_size, Decimal(str(sell_cngn_cap_trade["optimal_size_usd"])))
@@ -99,7 +102,7 @@ def select_route(
         if route_def.pipeline == "cex_dex" and adjusted_size != c.optimal_size_usd:
             # Detection already priced the unconstrained optimum. Only rescore when
             # inventory/depth caps force us onto a smaller trade size.
-            recomputed = estimate_cex_dex_trade(c.direction, cex_depth, adjusted_size)
+            recomputed = estimate_cex_dex_trade(c.direction, cex_depth, adjusted_size, cex_fee)
             if not recomputed:
                 continue
             expected_profit_usd = Decimal(str(recomputed["expected_profit_usd"]))

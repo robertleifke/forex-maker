@@ -66,10 +66,12 @@ async def execute_route(engine: Any, route_def: TradeRoute, route: SelectedRoute
             sim_min_out_raw = int(min_out_usd * Decimal(10 ** sell_venue.stable_decimals))
 
             if buy_is_cex:
-                from engine.arb.detection.cex_dex import estimate_cex_buy_cngn
+                from engine.arb.detection.cex_dex import CEX_TAKER_FEES, QUIDAX_FEE, estimate_cex_buy_cngn
 
-                quidax_depth = c.signal.get("depth", {}).get(buy_venue_name)
-                sell_cngn_amount = estimate_cex_buy_cngn(quidax_depth, size_usd)
+                cex_depth = c.signal.get("depth", {}).get(buy_venue_name)
+                sell_cngn_amount = estimate_cex_buy_cngn(
+                    cex_depth, size_usd, CEX_TAKER_FEES.get(buy_venue_name, QUIDAX_FEE)
+                )
                 if sell_cngn_amount <= 0:
                     logger.warning(
                         "cex_dex_preflight_missing_depth_or_zero_estimate",

@@ -21,4 +21,5 @@ DEFAULT_PORTFOLIO_SOURCE_REGISTRY: tuple[PortfolioSourceDescriptor, ...] = (
     PortfolioSourceDescriptor("uni-bsc", "lp_position"),
     PortfolioSourceDescriptor("quidax", "exchange"),
     PortfolioSourceDescriptor("quidax-lp", "exchange"),
+    PortfolioSourceDescriptor("strails", "exchange"),
 )

@@ -58,6 +58,21 @@ ROUTES: list[TradeRoute] = [
         TradeLeg("quidax",   "api",     "sell"),
         "sells_cngn_to_cex",
     ),
+    # CEX → DEX: buy cNGN on StablesRail, sell cNGN on DEX (Base only — the
+    # smart wallet settles on Base, keeping inventory rebalancing same-chain)
+    TradeRoute(
+        "STRAILS_TO_UNI_BASE", "cex_dex",
+        TradeLeg("strails",  "api",     "buy"),
+        TradeLeg("uni-base", "onchain", "sell"),
+        "buys_cngn_from_cex",
+    ),
+    # DEX → CEX: buy cNGN on DEX, sell cNGN on StablesRail
+    TradeRoute(
+        "UNI_BASE_TO_STRAILS", "cex_dex",
+        TradeLeg("uni-base", "onchain", "buy"),
+        TradeLeg("strails",  "api",     "sell"),
+        "sells_cngn_to_cex",
+    ),
     # DEX → DEX
     TradeRoute(
         "UNI_BSC_TO_UNI_BASE_DELTA_BALANCE", "dex_dex",

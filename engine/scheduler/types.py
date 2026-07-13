@@ -14,6 +14,7 @@ class SchedulerState:
     trading_enabled: bool = True
     started: bool = False
     quidax_depth_ok: bool = True
+    strails_depth_ok: bool = True
     dex_bootstrap_pending: bool = False
     dex_bootstrap_task: asyncio.Task[None] | None = None
     dex_bootstrap_last_attempt: float = 0.0

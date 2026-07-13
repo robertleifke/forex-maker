@@ -16,19 +16,71 @@ from typing import Any, Callable
 import structlog
 
 from engine.types import OrderBookDepth
+from engine.arb.routing.route_registry import ROUTES, ROUTES_BY_DIRECTION
 from engine.market.pool_state import get_cached_pool_state, swap_token0_for_token1, swap_token1_for_token0, Q96
 
 logger = structlog.get_logger()
 
 QUIDAX_FEE = Decimal("0.001")  # 0.1% taker fee
 
-from engine.market import gas_oracle as _gas_oracle  # noqa: E402
-_CEX_DEX_GAS_FN = {
-    "QUIDAX_TO_UNI_BASE": _gas_oracle.gas_usd_base,
-    "UNI_BASE_TO_QUIDAX": _gas_oracle.gas_usd_base,
-    "QUIDAX_TO_UNI_BSC":  _gas_oracle.gas_usd_bsc,
-    "UNI_BSC_TO_QUIDAX":  _gas_oracle.gas_usd_bsc,
+# Per-venue taker fees applied when walking CEX depth. StablesRail fees accrue
+# without deducting from delivery (verified against live fills, both directions,
+# 2026-07-13) — revisit if their platform fee ever starts reducing fills.
+CEX_TAKER_FEES: dict[str, Decimal] = {
+    "quidax": QUIDAX_FEE,
+    "strails": Decimal("0"),
 }
+
+from engine.market import gas_oracle as _gas_oracle  # noqa: E402
+# Gas depends only on the chain of the on-chain leg.
+_DEX_GAS_FN = {
+    "uni-base": _gas_oracle.gas_usd_base,
+    "uni-bsc": _gas_oracle.gas_usd_bsc,
+}
+
+
+def cex_directions_for(cex_venue: str) -> list[tuple[str, str, bool]]:
+    """Registered CEX-DEX routes touching a CEX venue, from the route registry.
+
+    Returns (direction, dex_venue, cex_is_buy) triplets — the registry is the
+    sole source of directions, so a venue trades exactly the routes registered
+    for it and nothing else.
+    """
+    out: list[tuple[str, str, bool]] = []
+    for route in ROUTES:
+        if route.pipeline != "cex_dex":
+            continue
+        if route.buy_leg.leg_type == "api" and route.buy_leg.venue == cex_venue:
+            out.append((route.direction, route.sell_leg.venue, True))
+        elif route.sell_leg.leg_type == "api" and route.sell_leg.venue == cex_venue:
+            out.append((route.direction, route.buy_leg.venue, False))
+    return out
+
+
+# V4 pool orientation per DEX venue: (cngn_is_token0, token0_decimals, token1_decimals).
+# BSC pairs 18-dp USDT (token0) with 6-dp cNGN; Base pairs 6-dp cNGN (token0) with USDC.
+_DEX_POOL_SHAPE = {
+    "uni-bsc": (False, 18, 6),
+    "uni-base": (True, 6, 6),
+}
+
+_PoolState = tuple[Decimal, Decimal, Decimal]  # sqrt_price, liquidity, fee
+
+
+def _dex_sell_cngn(dex_venue: str, cngn: Decimal, state: _PoolState) -> Decimal:
+    cngn_is_token0, d0, d1 = _DEX_POOL_SHAPE[dex_venue]
+    sqrt_p, liq, fee = state
+    if cngn_is_token0:
+        return swap_token0_for_token1(cngn, sqrt_p, liq, fee, d0, d1)
+    return swap_token1_for_token0(cngn, sqrt_p, liq, fee, d0, d1)
+
+
+def _dex_buy_cngn(dex_venue: str, usd: Decimal, state: _PoolState) -> Decimal:
+    cngn_is_token0, d0, d1 = _DEX_POOL_SHAPE[dex_venue]
+    sqrt_p, liq, fee = state
+    if cngn_is_token0:
+        return swap_token1_for_token0(usd, sqrt_p, liq, fee, d0, d1)
+    return swap_token0_for_token1(usd, sqrt_p, liq, fee, d0, d1)
 
 # Short-circuit: evaluate at $5 before running the full ternary search.
 # At $5 slippage on both legs is negligible, so profit ≈ raw spread.
@@ -153,28 +205,26 @@ def estimate_cex_dex_trade(
     bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True)
     asks = sorted(quidax_depth.asks, key=lambda x: x.price)
 
-    if direction == "QUIDAX_TO_UNI_BSC":
-        cngn, _ = walk_orderbook_bids(bids, investment_usd, cex_fee)
-        if cngn <= 0:
-            return None
-        usd_out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-    elif direction == "UNI_BSC_TO_QUIDAX":
-        cngn = swap_token0_for_token1(investment_usd, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        if cngn <= 0:
-            return None
-        usd_out, _ = walk_orderbook_asks(asks, cngn, cex_fee)
-    elif direction == "QUIDAX_TO_UNI_BASE":
-        cngn, _ = walk_orderbook_bids(bids, investment_usd, cex_fee)
-        if cngn <= 0:
-            return None
-        usd_out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-    elif direction == "UNI_BASE_TO_QUIDAX":
-        cngn = swap_token1_for_token0(investment_usd, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        if cngn <= 0:
-            return None
-        usd_out, _ = walk_orderbook_asks(asks, cngn, cex_fee)
-    else:
+    route = ROUTES_BY_DIRECTION.get(direction)
+    if route is None or route.pipeline != "cex_dex":
         return None
+    cex_is_buy = route.buy_leg.leg_type == "api"
+    dex_venue = route.sell_leg.venue if cex_is_buy else route.buy_leg.venue
+    pool_states: dict[str, _PoolState] = {
+        "uni-bsc": (uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee),
+        "uni-base": (uni_base_sqrt, uni_base_liq, uni_base_fee),
+    }
+
+    if cex_is_buy:
+        cngn, _ = walk_orderbook_bids(bids, investment_usd, cex_fee)
+        if cngn <= 0:
+            return None
+        usd_out = _dex_sell_cngn(dex_venue, cngn, pool_states[dex_venue])
+    else:
+        cngn = _dex_buy_cngn(dex_venue, investment_usd, pool_states[dex_venue])
+        if cngn <= 0:
+            return None
+        usd_out, _ = walk_orderbook_asks(asks, cngn, cex_fee)
 
     return {
         "expected_profit_usd": usd_out - investment_usd,
@@ -263,14 +313,20 @@ def _ternary_search(
 
 
 def find_optimal_arb(
-    quidax_depth: OrderBookDepth,
-    cex_fee: Decimal = QUIDAX_FEE,
+    cex_depth: OrderBookDepth,
+    cex_fee: Decimal | None = None,
 ) -> dict[str, Any] | None:
     """
-    Fast path: find the optimal CEX-DEX trade across all four directions.
+    Fast path: find the optimal CEX-DEX trade across the directions registered
+    for the depth's CEX venue (route registry is the source of directions).
     No curve generation. Returns optimal_arb, all_arbs, and prices.
     """
-    if not quidax_depth or not quidax_depth.asks or not quidax_depth.bids:
+    if not cex_depth or not cex_depth.asks or not cex_depth.bids:
+        return None
+    if cex_fee is None:
+        cex_fee = CEX_TAKER_FEES.get(cex_depth.venue, QUIDAX_FEE)
+    registered = cex_directions_for(cex_depth.venue)
+    if not registered:
         return None
 
     gas_base = _gas_oracle.gas_usd_base()
@@ -290,8 +346,12 @@ def find_optimal_arb(
     ):
         return None
 
-    bids = sorted(quidax_depth.bids, key=lambda x: x.price, reverse=True)
-    asks = sorted(quidax_depth.asks, key=lambda x: x.price)
+    bids = sorted(cex_depth.bids, key=lambda x: x.price, reverse=True)
+    asks = sorted(cex_depth.asks, key=lambda x: x.price)
+    pool_states: dict[str, _PoolState] = {
+        "uni-bsc": (uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee),
+        "uni-base": (uni_base_sqrt, uni_base_liq, uni_base_fee),
+    }
 
     def cex_buy(inv: Decimal) -> tuple[Decimal, list[dict[str, float]]]:
         return walk_orderbook_bids(bids, inv, cex_fee)
@@ -299,45 +359,38 @@ def find_optimal_arb(
     def cex_sell(amount: Decimal) -> tuple[Decimal, list[dict[str, float]]]:
         return walk_orderbook_asks(asks, amount, cex_fee)
 
-    def eval_quidax_to_bsc(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
-        cngn, _ = cex_buy(inv)
-        if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
-        out = swap_token1_for_token0(cngn, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        return out - inv, out, cngn
+    def _make_eval(dex_venue: str, cex_is_buy: bool) -> Callable[[Decimal], tuple[Decimal, Decimal, Decimal]]:
+        state = pool_states[dex_venue]
 
-    def eval_bsc_to_quidax(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
-        cngn = swap_token0_for_token1(inv, uni_bsc_sqrt, uni_bsc_liq, uni_bsc_fee, 18, 6)
-        if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
-        out, _ = cex_sell(cngn)
-        return out - inv, out, cngn
+        def _eval(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+            if cex_is_buy:
+                cngn, _ = cex_buy(inv)
+                if cngn == 0:
+                    return Decimal("-999999"), Decimal("0"), Decimal("0")
+                out = _dex_sell_cngn(dex_venue, cngn, state)
+            else:
+                cngn = _dex_buy_cngn(dex_venue, inv, state)
+                if cngn == 0:
+                    return Decimal("-999999"), Decimal("0"), Decimal("0")
+                out, _ = cex_sell(cngn)
+            return out - inv, out, cngn
 
-    def eval_quidax_to_base(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
-        cngn, _ = cex_buy(inv)
-        if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
-        out = swap_token0_for_token1(cngn, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        return out - inv, out, cngn
-
-    def eval_base_to_quidax(inv: Decimal) -> tuple[Decimal, Decimal, Decimal]:
-        cngn = swap_token1_for_token0(inv, uni_base_sqrt, uni_base_liq, uni_base_fee, 6, 6)
-        if cngn == 0: return Decimal("-999999"), Decimal("0"), Decimal("0")
-        out, _ = cex_sell(cngn)
-        return out - inv, out, cngn
+        return _eval
 
     directions = [
-        ("QUIDAX_TO_UNI_BSC", eval_quidax_to_bsc),
-        ("UNI_BSC_TO_QUIDAX", eval_bsc_to_quidax),
-        ("QUIDAX_TO_UNI_BASE", eval_quidax_to_base),
-        ("UNI_BASE_TO_QUIDAX", eval_base_to_quidax),
+        (direction, _make_eval(dex_venue, cex_is_buy), dex_venue)
+        for direction, dex_venue, cex_is_buy in registered
     ]
 
     best_profit = Decimal("-999999")
     best_size = Decimal("0")
     best_dir: str | None = None
+    best_dex: str | None = None
     best_cngn = Decimal("0")
     usd_out_expected = Decimal("0")
     all_arbs: list[dict[str, Any]] = []
 
-    for dir_name, eval_func in directions:
+    for dir_name, eval_func, dex_venue in directions:
         if eval_func(_SPREAD_CHECK_SIZE)[0] <= _SPREAD_CHECK_MIN_PROFIT:
             continue
         b_prof, b_size, b_cngn, b_out = _ternary_search(eval_func)
@@ -346,10 +399,10 @@ def find_optimal_arb(
                 best_profit = b_prof
                 best_size = b_size
                 best_dir = dir_name
+                best_dex = dex_venue
                 best_cngn = b_cngn
                 usd_out_expected = b_out
-            gas_fn = _CEX_DEX_GAS_FN.get(dir_name, _gas_oracle.gas_usd_bsc)
-            gas_usd = gas_fn()
+            gas_usd = _DEX_GAS_FN[dex_venue]()
             all_arbs.append({
                 "direction": dir_name,
                 "optimal_size_usd": float(b_size),
@@ -361,15 +414,15 @@ def find_optimal_arb(
             })
 
     best_spread_bps = int(((usd_out_expected - best_size) / best_size) * 10000) if best_size > 0 else 0
-    quidax_mid = Decimal("1") / ((bids[0].price + asks[0].price) / 2) if bids and asks else Decimal(0)
+    cex_mid = Decimal("1") / ((bids[0].price + asks[0].price) / 2) if bids and asks else Decimal(0)
     uni_bsc_price_usd = float(Decimal(1) / (((uni_bsc_sqrt / Q96) ** 2) * Decimal(10 ** (18 - 6))))
     uni_base_price_usd = float(((uni_base_sqrt / Q96) ** 2) * Decimal(10 ** (6 - 6)))
-    best_gas = _CEX_DEX_GAS_FN[best_dir]() if best_dir is not None else None
+    best_gas = _DEX_GAS_FN[best_dex]() if best_dex is not None else None
 
     return {
         "timestamp": int(time.time() * 1000),
         "prices": {
-            quidax_depth.venue: float(quidax_mid),
+            cex_depth.venue: float(cex_mid),
             "uni-bsc": uni_bsc_price_usd,
             "uni-base": uni_base_price_usd,
         },

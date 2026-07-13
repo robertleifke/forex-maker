@@ -259,6 +259,18 @@ class TradingScheduler:
             misfire_grace_time=10,
         )
         logger.info("quidax_depth_stream_job_registered")
+        if "strails" in self.context.venues:
+            self.scheduler.add_job(
+                self._stream_strails_depth,
+                # LP quotes move slowly and the venue is rate-limited; 10 s is
+                # plenty against ~1-2.5 min settlement latency.
+                IntervalTrigger(seconds=10),
+                id="strails_depth_stream",
+                replace_existing=True,
+                max_instances=2,
+                misfire_grace_time=15,
+            )
+            logger.info("strails_depth_stream_job_registered")
 
         self.scheduler.start()
         self.state.started = True
@@ -331,6 +343,9 @@ class TradingScheduler:
 
     async def _stream_quidax_depth(self) -> None:
         await self.arbitrage_jobs.stream_quidax_depth()
+
+    async def _stream_strails_depth(self) -> None:
+        await self.arbitrage_jobs.stream_strails_depth()
 
     async def _handle_wallet_activity(self, venue_names: list[str]) -> None:
         await self.arbitrage_jobs.handle_wallet_activity(venue_names)

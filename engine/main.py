@@ -33,6 +33,7 @@ from engine.runtime import EngineRuntime
 from engine.scheduler import SchedulerConfig, TradingScheduler
 from engine.arb import ArbitrageEngine
 from engine.venues.cex.quidax import QuidaxAdapter
+from engine.venues.cex.strails import StrailsAdapter
 from engine.lp.uniswap_v4 import V4PositionManager
 from engine.venues.dex.uniswap_base import UniswapBaseV4Adapter, UNISWAP_BASE_EXECUTION_CONFIG
 from engine.venues.dex.uniswap_bsc import UniswapBscV4Adapter, UNISWAP_BSC_EXECUTION_CONFIG
@@ -146,6 +147,19 @@ async def init_venues(
                 broadcast=broadcast,
             )
             logger.info("venue_initialized", venue="quidax-lp")
+
+    if settings.strails_api_key and settings.strails_smart_wallet_address:
+        venues["strails"] = StrailsAdapter(
+            api_key=settings.strails_api_key,
+            alert_store=alert_store,
+            wallet_address=settings.strails_smart_wallet_address,
+            rpc_url=settings.base_rpc_url,
+            cngn_address=settings.cngn_base_address,
+            stable_address=settings.usdc_base_address,
+            proxy=settings.strails_proxy or None,
+            destination_wallet=settings.strails_destination_wallet or None,
+        )
+        logger.info("venue_initialized", venue="strails")
 
     venues["blockradar"] = BlockradarAdapter(
         api_key=settings.blockradar_api_key,

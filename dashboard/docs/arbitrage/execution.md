@@ -84,6 +84,12 @@ This applies to both pipelines: for CEX-DEX a late-landing DEX sell plus a CEX r
 
 Resolution is operator-triggered only: nothing sweeps pending or half-open opportunities on startup or on a timer, and the on-chain `check_transaction` lookup runs only inside `/recover`. A pending leg therefore sits until an operator acts — a deliberate tradeoff, mitigated by the circuit breaker (trading is already halted) and the critical alert carrying the `/recover` command. Same operational model half-open trades have always had.
 
+API legs have the same pending state. A market order on an API venue (`MarketOrderVenue`) returns a typed `MarketOrderResult`; when the venue accepts the order but its outcome cannot be observed to a terminal state (StablesRail trades can be absent from `/fx/trades` for their entire ~1–2.5 min escrow settlement — observed live 2026-07-13), the leg is `pending`, never `failed`. The venue trade id rides in the leg's `tx_hash` and persists as `buy_tx_hash`/`sell_tx_hash`, and recovery resolves it through `check_trade` before acting: filled → completed; terminal failure → normal reversal; still unresolved → `/recover` refuses, exactly like the DEX pending-sell gate. Pinned in `tests/test_cex_dex_execution.py` (`TestCexPendingSell`) and `tests/test_strails_adapter.py`.
+
+## StablesRail (strails) venue
+
+`strails` is a CEX-style venue (pair CNGN-USDC on Base) registered for the `STRAILS_TO_UNI_BASE` / `UNI_BASE_TO_STRAILS` directions — Base only, so inventory rebalancing stays same-chain. Detection is registry-driven: `find_optimal_arb` derives a venue's directions from the route registry and resolves the taker fee from `CEX_TAKER_FEES` (`strails` = 0 — fees accrue without deducting from delivery, verified against live fills in both directions 2026-07-13). The adapter's depth already carries **executable** prices (LP reference × 1∓spread, quote-verified), so no spread modeling exists outside the adapter. Trades debit the StablesRail smart wallet and settle to the registered external wallet (`destinationWalletAddress`); the scheduler polls depth every 10 s and reconciles venue inventory from the smart wallet's on-chain balances before each detection tick. Enable by setting `STRAILS_API_KEY` and `STRAILS_SMART_WALLET_ADDRESS`.
+
 ## Circuit breaker
 
 `consecutive_failures >= max_consecutive_failures` (default 3) activates the circuit breaker, blocking all further trading. Any half-open trade also trips it immediately regardless of the failure count. Reset via `/reset_breaker` in the Telegram bot.

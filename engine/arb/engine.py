@@ -104,7 +104,9 @@ class ArbitrageEngine:
 
     async def on_cex_dex_depth(self, depth: Any, balances: list[Any]) -> None:
         """
-        Entry point for CEX-DEX arb. Called by scheduler on every Quidax depth update.
+        Entry point for CEX-DEX arb, called by the scheduler on every CEX depth
+        update (Quidax and StablesRail). Directions come from the route registry
+        via the depth's venue; fees resolve per venue inside find_optimal_arb.
         Computes optimal arb + portfolio valuation, broadcasts both, optionally executes.
         """
         from engine.arb.detection.cex_dex import find_optimal_arb
@@ -124,7 +126,8 @@ class ArbitrageEngine:
 
         broadcast_data = signal or {}
         broadcast_data["portfolio_value"] = val
-        self.broadcast({"type": "quidax_dex_optimal_arb", "data": broadcast_data})
+        # e.g. quidax_dex_optimal_arb / strails_dex_optimal_arb
+        self.broadcast({"type": f"{depth.venue.replace('-', '_')}_dex_optimal_arb", "data": broadcast_data})
 
         if signal and self._enabled and self.execute_cex_dex_enabled and not self._arb_executing:
             candidates = []
@@ -155,7 +158,8 @@ class ArbitrageEngine:
                 self._arb_executing = True
                 asyncio.create_task(self._execute_route(ROUTES_BY_DIRECTION[route.candidate.direction], route, opp_id))
 
-        if not self._cex_curve_task or self._cex_curve_task.done():
+        # The slow-path curve (and its dashboard panel) is Quidax-only for now.
+        if depth.venue == "quidax" and (not self._cex_curve_task or self._cex_curve_task.done()):
             self._cex_curve_task = asyncio.create_task(self._broadcast_cex_curve(depth, signal))
 
     async def _broadcast_cex_curve(self, depth: Any, signal: dict[str, Any] | None) -> None:

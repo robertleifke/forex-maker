@@ -1,6 +1,23 @@
 # CNGN Trading Engine
 
-Automated market-making engine for CNGN stablecoin across DEXs, CEXs, and wallet systems.
+Automated market-making engine for the cNGN stablecoin: cross-venue arbitrage
+(CEX↔DEX and DEX↔DEX pipelines), Uniswap V4 liquidity provision, and a
+real-time monitoring dashboard.
+
+## Venues
+
+| Venue | Type | Market | Notes |
+| --- | --- | --- | --- |
+| `quidax` | CEX (REST) | cNGN/USDT | Order-ladder market making + arb legs |
+| `strails` | [StablesRail](https://docs.strails.co) FX orderbook (REST) | CNGN-USDC, settles on Base | Escrow settlement (~1–2.5 min observed); adapter emits executable prices (LP reference × 1∓spread) and resolves trades through a pending/half-open state machine — all verified against live fills in both directions |
+| `uni-base` | Uniswap V4 (Base) | cNGN/USDC | Swaps + LP positions |
+| `uni-bsc` | Uniswap V4 (BSC) | cNGN/USDT | Swaps + LP positions |
+| `blockradar` | Wallet infrastructure | — | cNGN rates and transfers |
+
+The route registry (`engine/arb/routing/route_registry.py`) is the single
+source of truth for tradable directions; detection, sizing, and execution all
+derive from it. Inventory is venue-local, and every venue self-registers when
+its credentials are present in `.env`.
 
 ## Getting Started
 
@@ -8,13 +25,13 @@ Automated market-making engine for CNGN stablecoin across DEXs, CEXs, and wallet
 
 - Python 3.11+
 - Access to Base/BSC RPC endpoints
-- API keys for venues (Quidax, Blockradar, etc.)
+- API keys for venues (Quidax, StablesRail, Blockradar — each optional; a venue without keys is simply not started)
 
 ### Quick Start
 
 ```bash
-git clone https://github.com/lavavc/simple-mm.git
-cd simple-mm
+git clone https://github.com/robertleifke/forex-maker.git
+cd forex-maker
 
 # Set up virtual environment
 python3 -m venv .venv
@@ -25,7 +42,9 @@ pip install -e ".[dev]"
 
 # Configure
 cp .env.example .env
-# Edit .env — at minimum set QUIDAX_API_KEY for live CEX prices
+# Edit .env — at minimum set QUIDAX_API_KEY for live CEX prices.
+# For StablesRail set STRAILS_API_KEY + STRAILS_SMART_WALLET_ADDRESS
+# (see .env.example for the IP-allowlist / SOCKS-proxy notes).
 
 # Run the engine
 python -m engine.main

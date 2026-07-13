@@ -62,6 +62,7 @@ class StrailsAdapter(VenueAdapter):
         pair: str = "CNGN-USDC",
         base_url: str = "https://beta.stablesrail.io/v1",
         proxy: str | None = None,
+        destination_wallet: str | None = None,
         name: str = "strails",
     ):
         self.name = name
@@ -73,6 +74,12 @@ class StrailsAdapter(VenueAdapter):
         # (`ssh -D 1080 <vps>` → proxy="socks5://localhost:1080"). Scoped here
         # rather than HTTPS_PROXY so only StablesRail traffic takes the tunnel.
         self.proxy = proxy
+        # Optional settlement destination: StablesRail delivers bought tokens
+        # here instead of the smart wallet (trades still *debit* the smart
+        # wallet — that is not configurable).
+        self.destination_wallet = (
+            Web3.to_checksum_address(destination_wallet) if destination_wallet else None
+        )
         self.alert_store = alert_store
         self.stable_symbol = pair.split("-")[1].lower()  # "usdc" / "usdt"
         # Dynamic token-amount field in trade responses, e.g. "usdcAmount".
@@ -261,6 +268,8 @@ class StrailsAdapter(VenueAdapter):
             "cngnAmount": str(cngn_amount),
             "idempotencyKey": f"fxm-{uuid.uuid4()}",
         }
+        if self.destination_wallet:
+            payload["destinationWalletAddress"] = self.destination_wallet
         try:
             response = await client.post(f"{self.base_url}/fx/market-order", json=payload)
             resp_json: dict[str, Any] = response.json()

@@ -69,6 +69,7 @@ def _make_adapter(client: _FakeClient | None = None, alert_store=None) -> Strail
     adapter.paused = False
     adapter.cngn_decimals = 6
     adapter.stable_decimals = 6
+    adapter.destination_wallet = None
     adapter._client = client or _FakeClient()
     return adapter
 
@@ -213,6 +214,28 @@ class TestTradeLifecycle:
         # 500 USDC × executable bid (1389.33 × 0.995), rounded down to 6 dp —
         # sizing through the reference ask would overshoot the budget by the spread.
         assert client.post_payloads[0]["cngnAmount"] == "691191.675000"
+
+    @pytest.mark.asyncio
+    async def test_destination_wallet_included_when_configured(self):
+        client = self._trading_client([
+            _success({"status": "completed", "usdcAmount": "500", "price": "1382.38"}),
+        ])
+        adapter = _make_adapter(client)
+        adapter.destination_wallet = "0x2D724867d3AeD4A9F09c096B87F939285DD3AE2D"
+        await adapter.market_sell_cngn(Decimal("695000"))
+
+        assert client.post_payloads[0]["destinationWalletAddress"] == adapter.destination_wallet
+
+    @pytest.mark.asyncio
+    async def test_destination_wallet_omitted_by_default(self):
+        client = self._trading_client([
+            _success({"status": "completed", "usdcAmount": "500", "price": "1382.38"}),
+        ])
+        adapter = _make_adapter(client)
+        adapter.destination_wallet = None
+        await adapter.market_sell_cngn(Decimal("695000"))
+
+        assert "destinationWalletAddress" not in client.post_payloads[0]
 
     @pytest.mark.asyncio
     async def test_failed_trade_reports_error(self):
